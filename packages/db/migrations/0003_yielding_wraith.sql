@@ -1,0 +1,1 @@
+ALTER TABLE "sequences" ADD COLUMN "is_subsequence" boolean DEFAULT false NOT NULL;

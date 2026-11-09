@@ -1,0 +1,23 @@
+{
+  "name": "@outreach/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.0.1",
+    "@fastify/cors": "^10.0.1",
+    "@node-rs/argon2": "^2.0.2",
+    "@outreach/core": "*",
+    "@outreach/db": "*",
+    "@outreach/engine": "*",
+    "@outreach/mail": "*",
+    "csv-parse": "^5.6.0",
+    "drizzle-orm": "^0.38.2",
+    "fastify": "^5.2.0",
+    "zod": "^3.24.1"
+  }
+}

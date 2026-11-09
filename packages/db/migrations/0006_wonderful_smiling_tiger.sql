@@ -1,0 +1,1 @@
+ALTER TABLE "organizations" ADD COLUMN "merge_dnc" boolean DEFAULT false NOT NULL;

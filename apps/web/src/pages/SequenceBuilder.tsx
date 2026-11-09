@@ -1,0 +1,712 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  ArrowLeft, Building2, CalendarClock, ChevronRight, Clock, DollarSign, Eye, FileText, Forward, Link2, LogOut, Mail, MailOpen, MessageSquareReply,
+  MousePointerClick, Plus, Rocket, Save, Search, Send, Server, ShieldCheck, SlidersHorizontal, Trash2, Type, UserCheck, UserPlus, Users, X,
+} from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useParams } from "react-router-dom";
+import { api, type Contact, type Mailbox, type Paged, type SenderProfile, type SequenceDetail, type SequenceSettings, type Step, type Tag } from "../api";
+import { useWs } from "../App";
+import { cx, Empty, fmtDate, Modal, Pager, SafeHtml, Spinner, StatusPill, Toggle, useToast } from "../ui";
+import { ImportModal } from "./Contacts";
+import { SequenceOverview } from "./SequenceOverview";
+import { StepBuilder } from "../StepBuilder";
+import { NameServiceStep, Stepper, StepHeader, WIZARD_STEPS } from "./SequenceSteps";
+
+
+// Launched sequences open on the overview (analytics and contacts); drafts and /edit open the editor.
+export function SequenceBuilder() {
+  const ws = useWs();
+  const { id, "*": rest } = useParams();
+  const seq = useQuery({ queryKey: ["sequence", ws, id], queryFn: () => api<SequenceDetail>(`/v1/workspaces/${ws}/sequences/${id}`) });
+  if (seq.isLoading || !seq.data) return <Spinner />;
+  if (rest !== "edit" && seq.data.status !== "draft") return <SequenceOverview sequence={seq.data} />;
+  return <SequenceEditor />;
+}
+
+function SequenceEditor() {
+  const ws = useWs();
+  const { id } = useParams();
+  const qc = useQueryClient();
+  const toast = useToast();
+  const [step, setStep] = useState(0);
+  const seq = useQuery({ queryKey: ["sequence", ws, id], queryFn: () => api<SequenceDetail>(`/v1/workspaces/${ws}/sequences/${id}`) });
+  const [steps, setSteps] = useState<Step[]>([]);
+  const [dirty, setDirty] = useState(false);
+
+  useEffect(() => {
+    if (seq.data && !dirty) {
+      setSteps(seq.data.steps);
+    }
+  }, [seq.data, dirty]);
+
+  const refresh = () => qc.invalidateQueries({ queryKey: ["sequence", ws, id] });
+
+  const saveSteps = useMutation({
+    mutationFn: () => api(`/v1/workspaces/${ws}/sequences/${id}/steps`, {
+      method: "PUT",
+      body: { steps: steps.map((s) => ({ id: s.id, type: s.type, name: s.name, delayDays: s.delayDays, variants: s.variants.map((v) => ({ id: v.id, label: v.label, subject: v.subject, bodyHtml: v.bodyHtml, weight: v.weight })) })) },
+    }),
+    onSuccess: () => { setDirty(false); toast("Sequence saved"); refresh(); },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+  const action = useMutation({
+    mutationFn: (a: "launch" | "pause" | "resume") => api(`/v1/workspaces/${ws}/sequences/${id}/${a}`, { body: {} }),
+    onSuccess: (_, a) => { toast(a === "launch" ? "Sequence launched — sending starts in the next send window" : `Sequence ${a}d`); refresh(); },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+
+  if (seq.isLoading || !seq.data) return <Spinner />;
+  const s = seq.data;
+
+  return (
+    <div className="flex flex-col min-h-full">
+      <div className="bg-surface border-b border-ink-200 px-4 md:px-8 pt-5 pb-6">
+        <div className="flex flex-wrap items-center gap-3 mb-7">
+          <Link to={`/${ws}/sequences`} className="btn-ghost btn-sm" aria-label="Back to sequences"><ArrowLeft size={16} /></Link>
+          <h1 className="text-2xl font-semibold flex-1 min-w-0 truncate">Sequence builder</h1>
+          <span className="hidden sm:inline text-sm text-ink-500 truncate max-w-[260px]">{s.name}</span>
+          <StatusPill status={s.status} />
+          <div className="flex flex-wrap gap-2">
+            {dirty && <button className="btn-secondary" onClick={() => saveSteps.mutate()} disabled={saveSteps.isPending}><Save size={15} /> Save changes</button>}
+            {s.status === "draft" && <button className="btn-primary" disabled={dirty || action.isPending} title={dirty ? "Save first" : undefined} onClick={() => action.mutate("launch")}><Rocket size={15} /> Launch</button>}
+            {s.status === "active" && <button className="btn-secondary" onClick={() => action.mutate("pause")}>Pause</button>}
+            {s.status === "paused" && <button className="btn-primary" onClick={() => action.mutate("resume")}>Resume</button>}
+          </div>
+        </div>
+        <Stepper step={step} onStep={setStep} />
+      </div>
+
+      <div className="flex-1 p-4 md:p-8 w-full max-w-6xl">
+        {step === 0 && <NameServiceStep sequence={s} onSaved={refresh} />}
+        {step === 1 && <>
+          <StepHeader title="Contacts" help="Who receives this sequence." text={`${s.contactCount.toLocaleString()} contact${s.contactCount === 1 ? "" : "s"} in this sequence`} />
+          <div className="mt-6"><ContactsTab sequenceId={s.id} onChange={refresh} /></div>
+        </>}
+        {step === 2 && <StepHeader title="Step Builder" help="Add emails and the waits between them. Add variants to A/B test." text="Build your sequence by adding steps and customizing them"
+          actions={dirty ? <button className="btn-primary h-10" onClick={() => saveSteps.mutate()} disabled={saveSteps.isPending}>Update sequence</button> : undefined} />}
+        {step === 2 && <div className="mt-6"><StepBuilder steps={steps} onChange={(next) => { setSteps(next); setDirty(true); }} /></div>}
+
+        {(step === 3 || step === 4) && <>
+          {step === 3
+            ? <StepHeader title="Schedule" help="The days and hours emails may be sent, in the time zone below." text="Activate the days on which emails should be sent out." />
+            : <StepHeader title="Settings" help="Rotation, priorities and deliverability rules." text="Choose the mailboxes that send this sequence and how it behaves." />}
+          {step === 4 && <section className="pt-6"><h3 className="text-sm font-semibold mb-3">Rotation</h3><SendersTab sequence={s} onChange={refresh} /></section>}
+          <SettingsTab sequence={s} onChange={refresh} section={step === 3 ? "schedule" : "settings"} />
+        </>}
+
+        <div className="flex items-center justify-between pt-8 mt-4 border-t border-ink-200">
+          <button className="btn-secondary h-10" disabled={step === 0} onClick={() => setStep((x) => Math.max(0, x - 1))}>Back</button>
+          {step < WIZARD_STEPS.length - 1
+            ? <button className="btn-primary h-10" onClick={() => setStep((x) => Math.min(WIZARD_STEPS.length - 1, x + 1))}>Next: {WIZARD_STEPS[step + 1]!.label}</button>
+            : <span className="text-sm text-ink-500">{s.status === "draft" ? "All set? Use Launch at the top." : ""}</span>}
+        </div>
+      </div>
+
+    </div>
+  );
+}
+
+export function ContactsTab({ sequenceId, onChange }: { sequenceId: string; onChange: () => void }) {
+  const ws = useWs();
+  const qc = useQueryClient();
+  const toast = useToast();
+  const [page, setPage] = useState(1);
+  const [state, setState] = useState("");
+  const [adding, setAdding] = useState(false);
+  const list = useQuery({
+    queryKey: ["seq-contacts", ws, sequenceId, page, state],
+    queryFn: () => api<Paged<{ id: string; state: string; currentStep: number; nextRunAt: string | null; lastError: string | null; contact: { email: string; firstName: string; lastName: string; companyName: string } }>>(
+      `/v1/workspaces/${ws}/sequences/${sequenceId}/contacts?page=${page}${state ? `&state=${state}` : ""}`),
+  });
+  const onAdded = (r: { added: number; alreadyIn: number }) => {
+    toast([`Added ${r.added} contact${r.added === 1 ? "" : "s"}`, r.alreadyIn ? `${r.alreadyIn} already in this sequence` : ""].filter(Boolean).join(" · "));
+    setAdding(false);
+    qc.invalidateQueries({ queryKey: ["seq-contacts", ws, sequenceId] });
+    qc.invalidateQueries({ queryKey: ["sequences", ws] });
+    onChange();
+  };
+
+  return (
+    <div className="card overflow-hidden">
+      <div className="flex flex-wrap items-center gap-3 p-4 border-b border-ink-100">
+        <select className="input w-auto" value={state} onChange={(e) => { setState(e.target.value); setPage(1); }}>
+          <option value="">All statuses</option>
+          {["queued", "active", "replied", "ooo", "bounced", "opted_out", "finished", "error"].map((s) => <option key={s} value={s}>{s.replace("_", " ")}</option>)}
+        </select>
+        <button className="btn-primary ml-auto" onClick={() => setAdding(true)}><Plus size={15} /> Add contacts</button>
+      </div>
+      {list.isLoading ? <Spinner /> : !list.data?.items.length ? (
+        <Empty icon={<Users size={20} />} title="No contacts in this sequence" text="Add contacts by tag. Import them on the Contacts page first." action={<button className="btn-primary" onClick={() => setAdding(true)}>Add contacts</button>} />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead><tr><th className="th">Contact</th><th className="th">Company</th><th className="th">Status</th><th className="th">Emails sent</th><th className="th">Next send</th><th className="th">Note</th></tr></thead>
+            <tbody>
+              {list.data.items.map((r) => (
+                <tr key={r.id}>
+                  <td className="td"><div className="font-medium text-ink-800">{`${r.contact.firstName} ${r.contact.lastName}`.trim() || "—"}</div><div className="text-xs text-ink-500">{r.contact.email}</div></td>
+                  <td className="td">{r.contact.companyName || "—"}</td>
+                  <td className="td"><StatusPill status={r.state} /></td>
+                  <td className="td">{r.currentStep < 0 ? 0 : "✓ through step " + (r.currentStep + 1)}</td>
+                  <td className="td text-ink-500">{fmtDate(r.nextRunAt, true)}</td>
+                  <td className="td text-xs text-ink-400">{r.lastError?.replace(/_/g, " ") ?? ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <Pager page={page} pageSize={20} total={list.data.total} onPage={setPage} />
+        </div>
+      )}
+      {adding && <AddContactsModal sequenceId={sequenceId} onClose={() => setAdding(false)} onAdded={onAdded} />}
+    </div>
+  );
+}
+
+// First screen: choose where contacts come from. "Existing contacts" opens the picker; the others run an import into this sequence.
+function AddContactsModal(props: { sequenceId: string; onClose: () => void; onAdded: (r: { added: number; alreadyIn: number }) => void }) {
+  const [source, setSource] = useState<"choose" | "existing" | "google_sheet" | "csv">("choose");
+  if (source === "existing") return <ExistingContactsModal {...props} />;
+  if (source === "google_sheet" || source === "csv") return <ImportModal sequenceId={props.sequenceId} source={source} onClose={props.onClose} onBack={() => setSource("choose")} />;
+  const row = (icon: React.ReactNode, label: string, onClick: () => void) => (
+    <button className="w-full flex items-center gap-3 px-4 py-3.5 text-left text-[15px] hover:bg-ink-50" onClick={onClick}>
+      <span className="w-5 grid place-items-center text-ink-600">{icon}</span>
+      <span className="flex-1">{label}</span>
+      <ChevronRight size={18} className="text-ink-400" />
+    </button>
+  );
+  return (
+    <Modal open onClose={props.onClose} title="Add contacts" flush>
+      <div className="p-4">
+        <div className="rounded-xl border border-ink-200 divide-y divide-ink-100 overflow-hidden">
+          {row(<Users size={18} />, "Existing contacts", () => setSource("existing"))}
+          {row(<GoogleG />, "Google sheet URL", () => setSource("google_sheet"))}
+          {row(<FileText size={18} />, "Upload a CSV file", () => setSource("csv"))}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function GoogleG() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.8 1.1 7.9 3l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z" /><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3 0 5.8 1.1 7.9 3l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z" /><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z" /><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z" /></svg>
+  );
+}
+
+function ExistingContactsModal({ sequenceId, onClose, onAdded }: { sequenceId: string; onClose: () => void; onAdded: (r: { added: number; alreadyIn: number }) => void }) {
+  const ws = useWs();
+  const toast = useToast();
+  const [mode, setMode] = useState<"pick" | "tag" | "all">("pick");
+  const [tagId, setTagId] = useState("");
+  const [q, setQ] = useState("");
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const tags = useQuery({ queryKey: ["tags", ws], queryFn: () => api<Tag[]>(`/v1/workspaces/${ws}/tags`) });
+  const contacts = useQuery({
+    queryKey: ["contacts", ws, `picker:${q}`],
+    queryFn: () => api<Paged<Contact>>(`/v1/workspaces/${ws}/contacts?pageSize=100${q ? `&q=${encodeURIComponent(q)}` : ""}`),
+    enabled: mode === "pick",
+  });
+  const add = useMutation({
+    mutationFn: () => api<{ added: number; alreadyIn: number }>(`/v1/workspaces/${ws}/sequences/${sequenceId}/contacts`, {
+      body: mode === "all" ? { all: true } : mode === "tag" ? { tagId } : { contactIds: [...picked] },
+    }),
+    onSuccess: onAdded,
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+  const total = contacts.data?.total ?? 0;
+  const canAdd = mode === "all" || (mode === "tag" && !!tagId) || (mode === "pick" && picked.size > 0);
+
+  return (
+    <Modal open onClose={onClose} title="Add contacts to sequence" footer={<>
+      <button className="btn-secondary" onClick={onClose}>Cancel</button>
+      <button className="btn-primary" disabled={!canAdd || add.isPending} onClick={() => add.mutate()}>
+        {add.isPending ? "Adding…" : mode === "pick" ? `Add ${picked.size || ""} selected` : "Add"}
+      </button>
+    </>}>
+      <div className="flex gap-1 mb-4">
+        {([["pick", "Choose contacts"], ["tag", "By tag"], ["all", "All contacts"]] as const).map(([k, l]) => (
+          <button key={k} className={cx("btn-sm btn", mode === k ? "bg-ink-900 text-ink-50" : "bg-ink-100 text-ink-700")} onClick={() => setMode(k)}>{l}</button>
+        ))}
+      </div>
+      {mode === "pick" && (
+        <div>
+          <input className="input mb-2" placeholder="Search name, email, company" value={q} onChange={(e) => setQ(e.target.value)} autoFocus />
+          <div className="max-h-72 overflow-y-auto rounded-lg border border-ink-200 divide-y divide-ink-100">
+            {contacts.isLoading ? <Spinner /> : !contacts.data?.items.length ? (
+              <div className="p-4 text-sm text-ink-500">No contacts found. Add them on the Contacts page first.</div>
+            ) : contacts.data.items.map((c) => (
+              <label key={c.id} className="flex items-center gap-3 px-3 py-2 text-sm cursor-pointer hover:bg-ink-50">
+                <input type="checkbox" checked={picked.has(c.id)} onChange={(e) => setPicked((s) => { const n = new Set(s); e.target.checked ? n.add(c.id) : n.delete(c.id); return n; })} />
+                <span className="flex-1 min-w-0">
+                  <span className="block truncate text-ink-800">{`${c.firstName} ${c.lastName}`.trim() || c.email}</span>
+                  <span className="block truncate text-xs text-ink-500">{c.email}{c.companyName ? ` · ${c.companyName}` : ""}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+          {total > 100 && <p className="text-xs text-ink-500 mt-2">Showing the first 100 of {total}. Search to narrow down, or use "By tag" / "All contacts".</p>}
+        </div>
+      )}
+      {mode === "tag" && (
+        (tags.data ?? []).length ? (
+          <select className="input" value={tagId} onChange={(e) => setTagId(e.target.value)}>
+            <option value="">Choose a tag…</option>
+            {(tags.data ?? []).map((t) => <option key={t.id} value={t.id}>{t.name} ({t.contacts})</option>)}
+          </select>
+        ) : <p className="text-sm text-ink-500">You don't have any tags yet. Tag contacts on the Contacts page, or use "Choose contacts".</p>
+      )}
+      {mode === "all" && <p className="text-sm text-ink-600">Every contact in this workspace will be added.</p>}
+      <p className="text-xs text-ink-500 mt-3">Contacts already in this sequence are skipped. Do-not-contact entries and unsubscribes are checked before every send.</p>
+    </Modal>
+  );
+}
+
+function SendersTab({ sequence, onChange }: { sequence: SequenceDetail; onChange: () => void }) {
+  const ws = useWs();
+  const qc = useQueryClient();
+  const toast = useToast();
+  const [adding, setAdding] = useState<null | "choose" | "profiles" | "mailboxes" | "create">(null);
+  const profiles = useQuery({ queryKey: ["sender-profiles", ws], queryFn: () => api<SenderProfile[]>(`/v1/workspaces/${ws}/sender-profiles`) });
+  const mailboxes = useQuery({ queryKey: ["mailboxes", ws], queryFn: () => api<Mailbox[]>(`/v1/workspaces/${ws}/mailboxes`) });
+  const picked = useQuery({ queryKey: ["seq-mailboxes", ws, sequence.id], queryFn: () => api<{ mailboxIds: string[] }>(`/v1/workspaces/${ws}/sequences/${sequence.id}/mailboxes`) });
+
+  const attached = (profiles.data ?? []).filter((p) => sequence.senderProfileIds.includes(p.id));
+  const pickedMailboxes = (mailboxes.data ?? []).filter((m) => picked.data?.mailboxIds.includes(m.id));
+  const allMailboxes = new Map<string, Mailbox>();
+  for (const p of attached) for (const m of p.mailboxes) { const full = mailboxes.data?.find((x) => x.id === m.id); if (full) allMailboxes.set(full.id, full); }
+  for (const m of pickedMailboxes) allMailboxes.set(m.id, m);
+  const capacity = [...allMailboxes.values()].filter((m) => m.status === "active").reduce((s, m) => s + m.dailyLimit, 0);
+
+  const refresh = () => {
+    onChange();
+    qc.invalidateQueries({ queryKey: ["seq-mailboxes", ws, sequence.id] });
+    qc.invalidateQueries({ queryKey: ["sender-profiles", ws] });
+  };
+  const setProfiles = useMutation({
+    mutationFn: (ids: string[]) => api(`/v1/workspaces/${ws}/sequences/${sequence.id}/senders`, { method: "PUT", body: { senderProfileIds: ids } }),
+    onSuccess: () => { toast("Rotation updated"); refresh(); },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+  const setMailboxes = useMutation({
+    mutationFn: (ids: string[]) => api(`/v1/workspaces/${ws}/sequences/${sequence.id}/mailboxes`, { method: "PUT", body: { mailboxIds: ids } }),
+    onSuccess: () => { toast("Mailboxes updated"); refresh(); },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+
+  const empty = !attached.length && !pickedMailboxes.length;
+  return (
+    <div className="max-w-4xl space-y-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="grid grid-cols-3 gap-3 flex-1 min-w-[280px]">
+          <div className="card px-4 py-3"><div className="text-xs text-ink-500">Rotations</div><div className="text-xl font-semibold">{attached.length}</div></div>
+          <div className="card px-4 py-3"><div className="text-xs text-ink-500">Total mailboxes</div><div className="text-xl font-semibold">{allMailboxes.size}</div></div>
+          <div className="card px-4 py-3"><div className="text-xs text-ink-500">Daily capacity</div><div className="text-xl font-semibold">{capacity}</div></div>
+        </div>
+        <button className="btn-primary" onClick={() => setAdding("choose")}><Plus size={16} /> Add rotation</button>
+      </div>
+
+      <div className="card overflow-hidden">
+        {profiles.isLoading || picked.isLoading ? <Spinner /> : empty ? (
+          <Empty icon={<Mail size={20} />} title="No rotation yet" text="Choose which mailboxes this sequence sends from. Sending is spread across all of them within each mailbox's daily limit." action={<button className="btn-primary" onClick={() => setAdding("choose")}><Plus size={16} /> Add rotation</button>} />
+        ) : (
+          <table className="w-full">
+            <thead><tr><th className="th">Rotation</th><th className="th">Mailboxes</th><th className="th text-right">Daily capacity</th><th className="th" /></tr></thead>
+            <tbody>
+              {attached.map((p) => (
+                <tr key={p.id}>
+                  <td className="td font-medium">{p.name}<div className="text-xs font-normal text-ink-500">Rotation</div></td>
+                  <td className="td"><div className="flex flex-wrap gap-1">{p.mailboxes.slice(0, 3).map((m) => <span key={m.id} className="chip bg-ink-100 text-ink-600">{m.email}</span>)}{p.mailboxes.length > 3 && <span className="chip bg-ink-100 text-ink-600">+{p.mailboxes.length - 3}</span>}</div></td>
+                  <td className="td text-right">{p.dailyCap}</td>
+                  <td className="td text-right"><button className="btn-ghost btn-sm" title="Remove from sequence" onClick={() => setProfiles.mutate(sequence.senderProfileIds.filter((x) => x !== p.id && attached.some((a) => a.id === x)))}><Trash2 size={14} /></button></td>
+                </tr>
+              ))}
+              {pickedMailboxes.map((m) => (
+                <tr key={m.id}>
+                  <td className="td font-medium">{m.fromName}<div className="text-xs font-normal text-ink-500">Mailbox</div></td>
+                  <td className="td"><span className="chip bg-ink-100 text-ink-600">{m.email}</span>{m.status !== "active" && <StatusPill status={m.status} />}</td>
+                  <td className="td text-right">{m.dailyLimit}</td>
+                  <td className="td text-right"><button className="btn-ghost btn-sm" title="Remove from sequence" onClick={() => setMailboxes.mutate((picked.data?.mailboxIds ?? []).filter((x) => x !== m.id))}><Trash2 size={14} /></button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {adding === "choose" && (
+        <Modal open onClose={() => setAdding(null)} title="Add rotation" flush>
+          <div className="p-4">
+            <div className="rounded-xl border border-ink-200 overflow-hidden">
+              {([
+                [<UserCheck key="a" size={18} />, "Add rotation", () => setAdding("profiles")],
+                [<Mail key="b" size={18} />, "Select mailboxes", () => setAdding("mailboxes")],
+              ] as const).map(([icon, label, go]) => (
+                <button key={label} className="w-full flex items-center gap-3 px-4 py-3.5 text-left text-[15px] hover:bg-ink-50 border-b border-ink-100" onClick={go}>
+                  <span className="w-5 grid place-items-center text-ink-600">{icon}</span><span className="flex-1">{label}</span><ChevronRight size={18} className="text-ink-400" />
+                </button>
+              ))}
+              <div className="h-2 bg-ink-50/60 border-b border-ink-100" />
+              <button className="w-full flex items-center gap-3 px-4 py-3.5 text-left text-[15px] hover:bg-ink-50" onClick={() => setAdding("create")}>
+                <span className="w-5 grid place-items-center text-ink-600"><UserPlus size={18} /></span><span className="flex-1">Create new rotation</span><ChevronRight size={18} className="text-ink-400" />
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {adding === "profiles" && (
+        <PickProfilesModal profiles={profiles.data ?? []} initial={attached.map((p) => p.id)} onClose={() => setAdding(null)}
+          onSave={(ids) => { setProfiles.mutate(ids); setAdding(null); }} onCreate={() => setAdding("create")} />
+      )}
+      {adding === "mailboxes" && (
+        <PickMailboxesModal mailboxes={mailboxes.data ?? []} initial={picked.data?.mailboxIds ?? []} onClose={() => setAdding(null)}
+          onSave={(ids) => { setMailboxes.mutate(ids); setAdding(null); }} />
+      )}
+      {adding === "create" && (
+        <CreateSenderModal mailboxes={mailboxes.data ?? []} onClose={() => setAdding(null)}
+          onCreated={(id) => { setProfiles.mutate([...attached.map((p) => p.id), id]); setAdding(null); }} />
+      )}
+    </div>
+  );
+}
+
+function PickProfilesModal({ profiles, initial, onClose, onSave, onCreate }: { profiles: SenderProfile[]; initial: string[]; onClose: () => void; onSave: (ids: string[]) => void; onCreate: () => void }) {
+  const [sel, setSel] = useState<string[]>(initial);
+  return (
+    <Modal open onClose={onClose} title="Add rotation" icon={<UserCheck size={20} />} footer={<>
+      <button className="btn-secondary" onClick={onClose}>Cancel</button>
+      <button className="btn-primary" onClick={() => onSave(sel)}>Add to sequence</button>
+    </>}>
+      {!profiles.length ? (
+        <Empty icon={<UserCheck size={20} />} title="No rotations yet" text="A rotation groups mailboxes that send together." action={<button className="btn-primary" onClick={onCreate}><UserPlus size={16} /> Create new rotation</button>} />
+      ) : (
+        <div className="max-h-96 overflow-y-auto rounded-lg border border-ink-200 divide-y divide-ink-100">
+          {profiles.map((p) => (
+            <label key={p.id} className="flex items-center gap-3 px-3 py-2.5 cursor-pointer hover:bg-ink-50">
+              <input type="checkbox" checked={sel.includes(p.id)} onChange={(e) => setSel((x) => (e.target.checked ? [...x, p.id] : x.filter((y) => y !== p.id)))} />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium">{p.name}</div>
+                <div className="text-xs text-ink-500">{p.mailboxes.length} mailboxes · {p.dailyCap}/day</div>
+              </div>
+            </label>
+          ))}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+// Full-width "Add mailboxes" picker: count, search, filters, select all, and a table of every mailbox.
+function PickMailboxesModal({ mailboxes, initial, onClose, onSave }: { mailboxes: Mailbox[]; initial: string[]; onClose: () => void; onSave: (ids: string[]) => void }) {
+  const [sel, setSel] = useState<Set<string>>(new Set(initial));
+  const [q, setQ] = useState("");
+  const [status, setStatus] = useState("");
+  const [provider, setProvider] = useState("");
+  const [showFilters, setShowFilters] = useState(false);
+  const rows = mailboxes.filter((m) =>
+    (!q || `${m.email} ${m.fromName}`.toLowerCase().includes(q.toLowerCase())) && (!status || m.status === status) && (!provider || m.provider === provider));
+  const allSel = rows.length > 0 && rows.every((m) => sel.has(m.id));
+  const changed = sel.size !== initial.length || [...sel].some((id) => !initial.includes(id));
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 p-2 sm:p-6 flex" onMouseDown={onClose}>
+      <div className="card w-full flex flex-col overflow-hidden" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-4 px-5 py-4 border-b border-ink-100">
+          <span className="grid place-items-center w-12 h-12 rounded-xl border border-ink-200"><Mail size={20} /></span>
+          <h2 className="font-semibold text-lg flex-1">Add mailboxes</h2>
+          <button className="btn-primary h-11 px-5" disabled={!changed} onClick={() => onSave([...sel])}>Add to sequence</button>
+          <button className="btn-ghost btn-sm" onClick={onClose} aria-label="Close"><X size={18} /></button>
+        </div>
+        <div className="p-4 sm:p-6 flex-1 overflow-hidden flex flex-col">
+          <div className="card flex-1 flex flex-col overflow-hidden">
+            <div className="flex flex-wrap items-center gap-3 p-4 border-b border-ink-100">
+              <span className="font-semibold">Mailboxes: {mailboxes.length}</span>
+              <div className="relative w-full sm:w-72">
+                <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-400" />
+                <input className="input pl-9" placeholder="Search" value={q} onChange={(e) => setQ(e.target.value)} />
+              </div>
+              <div className="relative">
+                <button className={cx("btn-secondary", (status || provider) && "border-brand-500 text-brand-700")} onClick={() => setShowFilters((s) => !s)}><SlidersHorizontal size={15} /> Filters</button>
+                {showFilters && (
+                  <div className="absolute left-0 top-11 z-10 w-64 card p-4 space-y-3">
+                    <div><div className="label">Status</div>
+                      <select className="input" value={status} onChange={(e) => setStatus(e.target.value)}><option value="">Any</option><option value="active">Active</option><option value="paused">Paused</option><option value="error">Error</option></select>
+                    </div>
+                    <div><div className="label">Provider</div>
+                      <select className="input" value={provider} onChange={(e) => setProvider(e.target.value)}><option value="">Any</option><option value="google">Google</option><option value="microsoft">Microsoft</option><option value="smtp">IMAP/SMTP</option></select>
+                    </div>
+                  </div>
+                )}
+              </div>
+              <span className="text-sm text-ink-500">{sel.size} selected</span>
+              <button className="btn-secondary ml-auto" onClick={() => setSel((s) => { const n = new Set(s); rows.forEach((m) => (allSel ? n.delete(m.id) : n.add(m.id))); return n; })}>{allSel ? "Clear all" : "Select all"}</button>
+            </div>
+            <div className="flex-1 overflow-auto">
+              {!mailboxes.length ? (
+                <Empty icon={<Mail size={20} />} title="No mailboxes connected" text="Connect mailboxes on the Senders & Mailboxes page first." />
+              ) : (
+                <table className="w-full">
+                  <thead className="sticky top-0"><tr><th className="th w-10" /><th className="th">Mailbox</th><th className="th">Status</th><th className="th">Provider</th><th className="th text-right">Sent today / limit</th><th className="th">Tags</th></tr></thead>
+                  <tbody>
+                    {rows.map((m) => (
+                      <tr key={m.id} className={cx("cursor-pointer hover:bg-ink-50/60", sel.has(m.id) && "bg-brand-50/40")} onClick={() => setSel((s) => { const n = new Set(s); n.has(m.id) ? n.delete(m.id) : n.add(m.id); return n; })}>
+                        <td className="td"><input type="checkbox" readOnly checked={sel.has(m.id)} /></td>
+                        <td className="td"><div className="font-medium">{m.fromName}</div><div className="text-xs text-ink-500">{m.email}</div></td>
+                        <td className="td"><StatusPill status={m.status} /></td>
+                        <td className="td capitalize">{m.provider === "smtp" ? "IMAP/SMTP" : m.provider}</td>
+                        <td className="td text-right">{m.sentToday} / {m.dailyLimit}</td>
+                        <td className="td"><div className="flex flex-wrap gap-1">{m.tags.map((t) => <span key={t} className="chip bg-ink-100 text-ink-600">{t}</span>)}</div></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CreateSenderModal({ mailboxes, onClose, onCreated }: { mailboxes: Mailbox[]; onClose: () => void; onCreated: (id: string) => void }) {
+  const ws = useWs();
+  const toast = useToast();
+  const [name, setName] = useState("");
+  const [ids, setIds] = useState<string[]>([]);
+  const create = useMutation({
+    mutationFn: () => api<{ id: string }>(`/v1/workspaces/${ws}/sender-profiles`, { body: { name, mailboxIds: ids } }),
+    onSuccess: (r) => { toast("Rotation created"); onCreated(r.id); },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+  return (
+    <Modal open onClose={onClose} title="Create new rotation" subtitle="Group mailboxes that take turns sending." icon={<UserPlus size={20} />} footer={<>
+      <button className="btn-secondary" onClick={onClose}>Cancel</button>
+      <button className="btn-primary" disabled={!name.trim() || !ids.length || create.isPending} onClick={() => create.mutate()}>Create and add</button>
+    </>}>
+      <div className="space-y-4">
+        <div><label className="label">Rotation name</label><input className="input" value={name} autoFocus onChange={(e) => setName(e.target.value)} placeholder="e.g. Satya (sales)" /></div>
+        <div>
+          <div className="flex items-center justify-between mb-1"><span className="label mb-0">Mailboxes</span>
+            {!!mailboxes.length && <button className="text-xs text-brand-700" onClick={() => setIds(ids.length === mailboxes.length ? [] : mailboxes.map((m) => m.id))}>{ids.length === mailboxes.length ? "Clear" : "Select all"}</button>}</div>
+          <div className="max-h-64 overflow-y-auto rounded-lg border border-ink-200 divide-y divide-ink-100">
+            {mailboxes.map((m) => (
+              <label key={m.id} className="flex items-center gap-3 px-3 py-2 text-sm cursor-pointer hover:bg-ink-50">
+                <input type="checkbox" checked={ids.includes(m.id)} onChange={(e) => setIds((x) => (e.target.checked ? [...x, m.id] : x.filter((y) => y !== m.id)))} />
+                <span className="flex-1">{m.email}</span><span className="text-xs text-ink-400">{m.dailyLimit}/day</span>
+              </label>
+            ))}
+            {!mailboxes.length && <div className="p-3 text-sm text-ink-500">Connect a mailbox first on the Senders & Mailboxes page.</div>}
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+// One labelled band of the settings page: section name on the left, controls on the right.
+function SettingsRow({ title, children, show = true }: { title: string; children: React.ReactNode; show?: boolean }) {
+  if (!show) return null;
+  return (
+    <div className="grid md:grid-cols-[240px_1fr] gap-3 md:gap-8 py-6 border-b border-ink-200 last:border-0">
+      <div className="text-sm font-semibold pt-1">{title}</div>
+      <div className="space-y-3 max-w-2xl">{children}</div>
+    </div>
+  );
+}
+
+function OptionCard({ icon, title, text, checked, onChange, badge, children }: {
+  icon: React.ReactNode; title: string; text: string; checked: boolean; onChange: (v: boolean) => void; badge?: React.ReactNode; children?: React.ReactNode;
+}) {
+  return (
+    <div className={cx("rounded-xl border p-3.5 transition-colors", checked ? "border-brand-500 bg-brand-50/40" : "border-ink-200 bg-surface")}>
+      <div className="flex items-start gap-3">
+        <span className="grid place-items-center w-8 h-8 shrink-0 rounded-lg border border-ink-200 bg-surface text-ink-500">{icon}</span>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium">{title}</div>
+          <div className="text-xs text-ink-500 mt-0.5">{text}</div>
+        </div>
+        {badge}
+        <Toggle checked={checked} onChange={onChange} />
+      </div>
+      {checked && children && <div className="mt-3 pl-11">{children}</div>}
+    </div>
+  );
+}
+
+
+const WEEK = [1, 2, 3, 4, 5, 6, 0];
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const pad2 = (n: number) => String(n).padStart(2, "0");
+const hourOf = (hhmm: string) => (hhmm === "23:59" ? 24 : Number(hhmm.slice(0, 2)));
+const fromHour = (h: number) => `${pad2(Math.min(23, Math.max(0, h)))}:00`;
+const toHourStr = (h: number) => (h >= 24 ? "23:59" : `${pad2(Math.max(1, h))}:00`);
+const ampm = (h: number) => (h % 24 === 0 ? "12 AM" : h < 12 ? `${h} AM` : h === 12 ? "12 PM" : `${h - 12} PM`);
+const hoursFor = (sc: SequenceSettings["schedule"], d: number) => sc.hours?.[String(d)] ?? { start: sc.start, end: sc.end };
+const scheduleInvalid = (sc: SequenceSettings["schedule"]) => !sc.days.length || sc.days.some((d) => { const h = hoursFor(sc, d); return h.end <= h.start; });
+// jsonb returns object keys in its own order, so compare with sorted keys.
+const stable = (v: unknown): string => JSON.stringify(v, (_k, val) => (val && typeof val === "object" && !Array.isArray(val) ? Object.fromEntries(Object.entries(val).sort(([a], [b]) => a.localeCompare(b))) : val));
+const withoutProduct = (x: SequenceSettings) => { const { language: _l, productId: _p, ...rest } = x; return rest; };
+
+function ScheduleDays({ schedule, onChange }: { schedule: SequenceSettings["schedule"]; onChange: (s: SequenceSettings["schedule"]) => void }) {
+  const apply = (days: number[], hours: Record<string, { start: string; end: string }>) => {
+    const act = days.map((d) => hours[String(d)] ?? { start: schedule.start, end: schedule.end });
+    onChange({
+      ...schedule, days, hours,
+      start: act.length ? act.map((h) => h.start).sort()[0]! : schedule.start,
+      end: act.length ? act.map((h) => h.end).sort().at(-1)! : schedule.end,
+    });
+  };
+  const setHours = (d: number, patch: Partial<{ start: string; end: string }>) =>
+    apply(schedule.days, { ...(schedule.hours ?? {}), [String(d)]: { ...hoursFor(schedule, d), ...patch } });
+  const toggleDay = (d: number, on: boolean) => {
+    const days = on ? [...new Set([...schedule.days, d])].sort() : schedule.days.filter((x) => x !== d);
+    apply(days, { ...(schedule.hours ?? {}), [String(d)]: hoursFor(schedule, d) });
+  };
+  return (
+    <div className="divide-y divide-ink-200 border-y border-ink-200">
+      {WEEK.map((d) => {
+        const on = schedule.days.includes(d);
+        const h = hoursFor(schedule, d);
+        const bad = on && h.end <= h.start;
+        return (
+          <div key={d} className="grid md:grid-cols-[160px_1fr] gap-3 py-4">
+            <div className="text-sm font-semibold pt-1">{DAY_NAMES[d]}</div>
+            <div className="space-y-2">
+              {on && (
+                <div className="flex flex-wrap gap-3">
+                  <div><div className="text-xs text-brand-700 mb-1">From Hour</div>
+                    <input type="number" min={0} max={23} className="input h-10 w-32" value={hourOf(h.start)} onChange={(e) => setHours(d, { start: fromHour(Number(e.target.value)) })} /></div>
+                  <div><div className="text-xs text-brand-700 mb-1">To Hour</div>
+                    <input type="number" min={1} max={24} className="input h-10 w-32" value={hourOf(h.end)} onChange={(e) => setHours(d, { end: toHourStr(Number(e.target.value)) })} /></div>
+                </div>
+              )}
+              <div className="flex items-center gap-3">
+                <Toggle checked={on} onChange={(v) => toggleDay(d, v)} />
+                <span className={cx("text-xs font-medium", bad ? "text-red-600" : on ? "text-brand-700" : "text-ink-500")}>
+                  {bad ? "The end hour must be after the start hour" : on ? `Active from ${ampm(hourOf(h.start))} - ${ampm(hourOf(h.end))}` : "Inactive"}
+                </span>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+const tzLabel = (tz: string) => {
+  try {
+    const off = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "shortOffset" }).formatToParts(new Date()).find((p) => p.type === "timeZoneName")?.value;
+    return `${tz} (${off})`;
+  } catch { return tz; }
+};
+
+function SettingsTab({ sequence, onChange, section = "all" }: { sequence: SequenceDetail; onChange: () => void; section?: "all" | "schedule" | "settings" }) {
+  const ws = useWs();
+  const toast = useToast();
+  const initial = useMemo(() => ({ pauseOnClick: false, pauseOnOpen: false, bounceShield: true, trackOpportunities: true, ...sequence.settings }), [sequence.settings]);
+  const [st, setSt] = useState<SequenceSettings>(initial);
+  const [priority, setPriority] = useState(sequence.priority);
+  const [ccOn, setCcOn] = useState(initial.cc.length > 0 || initial.bcc.length > 0);
+  const [ccText, setCcText] = useState({ cc: initial.cc.join(", "), bcc: initial.bcc.join(", ") });
+  const show = (g: "schedule" | "settings") => section === "all" || section === g;
+  const dirty = stable(withoutProduct(st)) !== stable(withoutProduct(initial)) || priority !== sequence.priority
+    || ccText.cc !== initial.cc.join(", ") || ccText.bcc !== initial.bcc.join(", ") || ccOn !== (initial.cc.length > 0 || initial.bcc.length > 0);
+  const zones = useMemo(() => {
+    try { return (Intl as unknown as { supportedValuesOf: (k: string) => string[] }).supportedValuesOf("timeZone"); } catch { return ["UTC"]; }
+  }, []);
+  const parseList = (s: string) => s.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
+  const save = useMutation({
+    mutationFn: () => api(`/v1/workspaces/${ws}/sequences/${sequence.id}`, {
+      method: "PATCH",
+      body: { priority, settings: { ...withoutProduct(st), cc: ccOn ? parseList(ccText.cc) : [], bcc: ccOn ? parseList(ccText.bcc) : [] } },
+    }),
+    onSuccess: () => { toast("Settings saved"); onChange(); },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+  const set = <K extends keyof SequenceSettings>(k: K, v: SequenceSettings[K]) => setSt((x) => ({ ...x, [k]: v }));
+  const notRecommended = <span className="chip bg-red-50 text-red-600 border border-red-200 shrink-0">Not recommended</span>;
+
+  return (
+    <div className="max-w-5xl pb-20">
+      <div className="card px-5 md:px-8">
+        <SettingsRow title="Timezone" show={show("schedule")}>
+          <select className="input h-10" value={st.schedule.timezone} onChange={(e) => set("schedule", { ...st.schedule, timezone: e.target.value })}>
+            {zones.map((z) => <option key={z} value={z}>{tzLabel(z)}</option>)}
+          </select>
+          <p className="text-xs text-ink-500">Send windows are measured in this time zone.</p>
+        </SettingsRow>
+        {show("schedule") && <ScheduleDays schedule={st.schedule} onChange={(sc) => set("schedule", sc)} />}
+
+        <SettingsRow title="Priority among your sequences" show={show("settings")}>
+          <select className="input h-10 max-w-xs" value={priority} onChange={(e) => setPriority(e.target.value as "high" | "regular")}>
+            <option value="regular">Regular</option><option value="high">High</option>
+          </select>
+          <p className="text-xs text-ink-500">{priority === "high" ? "High-priority sequences use mailbox capacity first each day." : "Shares the capacity left after high-priority sequences. Sending capacity goes from older to newer."}</p>
+        </SettingsRow>
+
+        <SettingsRow title="In-sequence sending priority" show={show("settings")}>
+          <select className="input h-10 max-w-xs" value={st.inSequencePriority} onChange={(e) => set("inSequencePriority", e.target.value as "new_first" | "followups_first")}>
+            <option value="new_first">New contacts first</option><option value="followups_first">Follow-ups first</option>
+          </select>
+          <p className="text-xs text-ink-500">{st.inSequencePriority === "new_first" ? "Daily sending focuses on new contacts first. Leftover capacity goes to follow-ups." : "Follow-ups are sent first so conversations keep moving. Leftover capacity goes to new contacts."}</p>
+        </SettingsRow>
+
+        <SettingsRow title="Multithreading" show={show("settings")}>
+          <OptionCard icon={<MessageSquareReply size={16} />} title="Stop on reply from company" text="If any recipient from a company replies, all other scheduled emails to that company's contacts will immediately pause." checked={st.stopOnCompanyReply} onChange={(v) => set("stopOnCompanyReply", v)} />
+          <OptionCard icon={<Users size={16} />} title="Sequential sending within a company" text="Send messages to people at a company one by one, after each has completed their sequence." checked={st.sequentialWithinCompany} onChange={(v) => set("sequentialWithinCompany", v)} />
+          <OptionCard icon={<Building2 size={16} />} title="Set a company limit" text="Set the maximum number of people you'll contact at the same company." checked={st.companyLimit !== null} onChange={(v) => set("companyLimit", v ? 3 : null)}>
+            <label className="flex items-center gap-2 text-sm">Max <input type="number" min={1} max={1000} className="input h-8 w-20" value={st.companyLimit ?? 3} onChange={(e) => set("companyLimit", Math.max(1, Number(e.target.value)))} /> people per company</label>
+          </OptionCard>
+        </SettingsRow>
+
+        <SettingsRow title="Out of office" show={show("settings")}>
+          <OptionCard icon={<CalendarClock size={16} />} title="Auto-resume after OOO" text="When an OOO reply includes a return date, the contact goes back to Active after the buffer below and continues from the next step." checked={st.oooAutoResume} onChange={(v) => set("oooAutoResume", v)}>
+            <label className="flex items-center gap-2 text-sm">Buffer <input type="number" min={0} max={30} className="input h-8 w-20" value={st.oooBufferDays} onChange={(e) => set("oooBufferDays", Math.max(0, Number(e.target.value)))} /> days after they're back</label>
+          </OptionCard>
+        </SettingsRow>
+
+        <SettingsRow title="Email only" show={show("settings")}>
+          <div className="text-sm font-medium text-ink-600">Sending</div>
+          <OptionCard icon={<Forward size={16} />} title="CC and BCC" text="Add CC and BCC recipients to your emails." checked={ccOn} onChange={setCcOn}>
+            <div className="grid sm:grid-cols-2 gap-2">
+              <input className="input h-9" placeholder="CC: name@company.com" value={ccText.cc} onChange={(e) => setCcText({ ...ccText, cc: e.target.value })} />
+              <input className="input h-9" placeholder="BCC: crm@company.com" value={ccText.bcc} onChange={(e) => setCcText({ ...ccText, bcc: e.target.value })} />
+            </div>
+          </OptionCard>
+          <OptionCard icon={<MousePointerClick size={16} />} title="Pause on click" text="Pause sequence for recipients who click on your emails. Needs link-click tracking." checked={!!st.pauseOnClick} onChange={(v) => set("pauseOnClick", v)} />
+          <OptionCard icon={<MailOpen size={16} />} title="Pause on open" text="Pause sequence for recipients who open your emails. Needs open tracking." checked={!!st.pauseOnOpen} onChange={(v) => set("pauseOnOpen", v)} />
+
+          <div className="text-sm font-medium text-ink-600 pt-3">Deliverability</div>
+          <OptionCard icon={<ShieldCheck size={16} />} title="Bounce shield" text="Checks each address before sending and skips contacts that already bounced or whose email domain can't receive mail, preventing bounces." checked={st.bounceShield ?? true} onChange={(v) => set("bounceShield", v)} />
+          <OptionCard icon={<Type size={16} />} title="Plain Text" text="Send emails as text-only, with no HTML, for the best deliverability." checked={st.plainText} onChange={(v) => set("plainText", v)}
+            badge={<span className="chip bg-brand-50 text-brand-700 border border-brand-200 shrink-0">Boost deliverability</span>} />
+          <OptionCard icon={<Server size={16} />} title="Email service provider (ESP) matching" text="Match the sender's and recipient's ESP (Gmail and Outlook only)." checked={st.espMatching} onChange={(v) => set("espMatching", v)} />
+
+          <div className="text-sm font-medium text-ink-600 pt-3">Opt-out of emails</div>
+          <OptionCard icon={<LogOut size={16} />} title="Custom opt-out at the bottom" text="Add a hyperlink or text for recipients to unsubscribe at the bottom of the email." checked={st.optOut.enabled} onChange={(v) => set("optOut", { ...st.optOut, enabled: v })}>
+            <input className="input h-9" value={st.optOut.text} onChange={(e) => set("optOut", { ...st.optOut, text: e.target.value })} placeholder="If you'd rather not hear from me, let me know" />
+            <p className="text-xs text-ink-500 mt-1">The text links to a one-click unsubscribe page.</p>
+          </OptionCard>
+          {!st.optOut.enabled && <p className="text-xs text-amber-700">Without an opt-out link, recipients can only unsubscribe by replying. CAN-SPAM, CASL and Gmail/Yahoo bulk-sender rules expect an easy opt-out in cold email.</p>}
+        </SettingsRow>
+
+        <SettingsRow title="Tracking" show={show("settings")}>
+          <OptionCard icon={<DollarSign size={16} />} title="Track opportunities" text="Keep track of opportunities value: positive replies, booked or completed meetings, closed deals." checked={st.trackOpportunities ?? true} onChange={(v) => set("trackOpportunities", v)} />
+          <OptionCard icon={<Eye size={16} />} title="Track open rate" text="Keep track of who's opening your emails." checked={st.trackOpens} onChange={(v) => set("trackOpens", v)} badge={notRecommended} />
+          <OptionCard icon={<Link2 size={16} />} title="Track link clicks" text="Keep track of the link clicks in your emails." checked={st.trackClicks} onChange={(v) => set("trackClicks", v)} badge={notRecommended} />
+          {st.plainText && (st.trackOpens || st.trackClicks) && <p className="text-xs text-amber-700">Plain text emails can't carry tracking, so opens and clicks won't be tracked while Plain Text is on.</p>}
+        </SettingsRow>
+      </div>
+
+      {dirty && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-30 card flex items-center gap-3 px-4 py-2.5 shadow-lg">
+          <span className="text-sm">You have unsaved changes</span>
+          <button className="btn-primary" onClick={() => save.mutate()} disabled={save.isPending || scheduleInvalid(st.schedule)}>{save.isPending ? "Saving…" : "Save settings"}</button>
+        </div>
+      )}
+    </div>
+  );
+}

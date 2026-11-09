@@ -1,0 +1,1 @@
+ALTER TABLE "sender_profiles" ADD COLUMN "owner_sequence_id" uuid;
