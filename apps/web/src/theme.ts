@@ -1,39 +1,29 @@
 import { useEffect, useState } from "react";
 
-export type ThemePref = "light" | "dark" | "system";
+export type ThemePref = "light" | "dark";
 const KEY = "theme";
-const media = () => window.matchMedia("(prefers-color-scheme: dark)");
 
+// Light is the default; a saved "system" value from an earlier version is treated as light.
 function read(): ThemePref {
   try {
-    const v = localStorage.getItem(KEY);
-    return v === "light" || v === "dark" ? v : "system";
+    return localStorage.getItem(KEY) === "dark" ? "dark" : "light";
   } catch {
-    return "system";
+    return "light";
   }
 }
 
 function apply(pref: ThemePref) {
-  const dark = pref === "dark" || (pref === "system" && media().matches);
-  document.documentElement.classList.toggle("dark", dark);
+  document.documentElement.classList.toggle("dark", pref === "dark");
 }
 
 export function useTheme(): [ThemePref, (p: ThemePref) => void] {
   const [pref, setPref] = useState<ThemePref>(read);
 
-  useEffect(() => {
-    apply(pref);
-    if (pref !== "system") return;
-    const m = media();
-    const onChange = () => apply("system");
-    m.addEventListener("change", onChange);
-    return () => m.removeEventListener("change", onChange);
-  }, [pref]);
+  useEffect(() => apply(pref), [pref]);
 
   const set = (p: ThemePref) => {
     try {
-      if (p === "system") localStorage.removeItem(KEY);
-      else localStorage.setItem(KEY, p);
+      localStorage.setItem(KEY, p);
     } catch {
       /* storage blocked: the choice still applies for this session */
     }

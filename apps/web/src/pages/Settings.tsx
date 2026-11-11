@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, type Paged } from "../api";
 import { useMe, useWs } from "../App";
-import { OAuthSetupModal, oauthStatusKey, type OAuthProviderKey, type OAuthStatus } from "../OAuthSetup";
 import { cx, Empty, fmtDate, Modal, PageHeader, Pager, PortalMenu, Spinner, Toggle, useToast } from "../ui";
 
 type TabKey = "usage" | "team" | "integrations" | "dnc" | "api" | "notifications";
@@ -251,7 +250,7 @@ const WEBHOOK_EVENTS = [
 
 type Integration = {
   name: string; color: string; text: string;
-  action: "soon" | "api_key" | "slack" | "webhook" | "oauth"; provider?: OAuthProviderKey; status?: boolean; source?: "workspace" | "server" | null; badge?: string;
+  action: "soon" | "api_key" | "slack" | "webhook"; badge?: string;
 };
 
 function IntegrationCard({ i, onAction }: { i: Integration; onAction: (i: Integration) => void }) {
@@ -270,10 +269,6 @@ function IntegrationCard({ i, onAction }: { i: Integration; onAction: (i: Integr
         {i.action === "api_key" && <button className="btn-primary btn-sm" onClick={() => onAction(i)}>Get API Key</button>}
         {i.action === "slack" && <button className="btn-primary btn-sm" onClick={() => onAction(i)}>Connect</button>}
         {i.action === "webhook" && <button className="btn-primary btn-sm" onClick={() => onAction(i)}>Add webhook</button>}
-        {i.action === "oauth" && <>
-          {i.status ? <span className="chip bg-emerald-50 text-emerald-700 mr-auto">{i.source === "server" ? "Set by server" : "Ready"}</span> : <span className="chip bg-amber-50 text-amber-700 mr-auto">Not set up</span>}
-          <button className="btn-primary btn-sm" onClick={() => onAction(i)}>{i.status ? "Edit" : "Set up"}</button>
-        </>}
       </div>
     </div>
   );
@@ -283,8 +278,6 @@ function IntegrationsTab({ onApiKey }: { onApiKey: () => void }) {
   const ws = useWs();
   const qc = useQueryClient();
   const toast = useToast();
-  const oauth = useQuery({ queryKey: oauthStatusKey(ws), queryFn: () => api<OAuthStatus>(`/v1/workspaces/${ws}/oauth/providers`) });
-  const [oauthModal, setOauthModal] = useState<OAuthProviderKey | null>(null);
   const hooks = useQuery({ queryKey: ["webhooks", ws], queryFn: () => api<{ id: string; name: string; url: string; kind: string; events: string[]; lastStatus: number | null; lastError: string | null; lastAt: string | null }[]>(`/v1/workspaces/${ws}/webhooks`) });
   const [modal, setModal] = useState<null | "slack" | "webhook">(null);
   const [form, setForm] = useState({ name: "", url: "", events: ["reply.received"] as string[] });
@@ -315,7 +308,6 @@ function IntegrationsTab({ onApiKey }: { onApiKey: () => void }) {
 
   const act = (i: Integration) => {
     if (i.action === "api_key") return onApiKey();
-    if (i.action === "oauth") return setOauthModal(i.provider ?? "google");
     setForm({ name: i.action === "slack" ? "Slack" : "", url: "", events: i.action === "slack" ? ["reply.received", "label.changed"] : ["reply.received"] });
     setModal(i.action === "slack" ? "slack" : "webhook");
   };
@@ -351,13 +343,6 @@ function IntegrationsTab({ onApiKey }: { onApiKey: () => void }) {
         { name: "Zapier", color: "#ff4a00", text: "Trigger Zaps from webhooks and call the API to connect thousands of apps.", action: "api_key" },
         { name: "Make", color: "#6d00cc", text: "Build Make scenarios with webhooks and the API.", action: "api_key" },
         { name: "Webhooks", color: "#64748b", text: "Send events (replies, labels, bounces, sends) to your own server.", action: "webhook" },
-      ],
-    },
-    {
-      title: "Mailbox sign-in (admins)",
-      items: [
-        { name: "Google sign-in", color: "#4285f4", text: "One-click Login for Gmail and Google Workspace mailboxes. An admin adds the app's Client ID and Secret here once; users never see them.", action: "oauth", provider: "google", status: oauth.data?.google.configured, source: oauth.data?.google.source },
-        { name: "Microsoft sign-in", color: "#0078d4", text: "One-click Login for Outlook and Microsoft 365 mailboxes. An admin adds the app's Client ID and Secret here once; users never see them.", action: "oauth", provider: "microsoft", status: oauth.data?.microsoft.configured, source: oauth.data?.microsoft.source },
       ],
     },
   ];
@@ -429,7 +414,6 @@ function IntegrationsTab({ onApiKey }: { onApiKey: () => void }) {
           </div>
         </Modal>
       )}
-      {oauthModal && <OAuthSetupModal provider={oauthModal} status={oauth.data?.[oauthModal]} onClose={() => setOauthModal(null)} onSaved={() => setOauthModal(null)} />}
       <Modal open={!!secret} onClose={() => setSecret(null)} title="Webhook signing secret" subtitle="It won't be shown again." icon={<KeyRound size={20} />} footer={<button className="btn-primary" onClick={() => setSecret(null)}>Done</button>}>
         <p className="text-sm text-ink-600 mb-3">Each request carries an <code>X-Webhook-Signature</code> header: <code>sha256=</code> HMAC of the raw body with this secret. Check it on your server to be sure the request came from Maple MPSS.</p>
         <div className="flex gap-2">

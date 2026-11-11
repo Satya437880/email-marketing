@@ -3,10 +3,9 @@ import { AlertTriangle, CheckCircle2, ChevronRight, Clock, Download, Eye, EyeOff
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, ApiError, type Mailbox, type SenderProfile } from "../api";
-import { useMe, useWs } from "../App";
+import { useWs } from "../App";
 import { RichBody } from "../EmailEditor";
-import { GmailMark, GoogleMark, MicrosoftMark } from "../marks";
-import { OAuthSetupModal, oauthStatusKey, type OAuthStatus } from "../OAuthSetup";
+import { GoogleMark, MicrosoftMark } from "../marks";
 import { cx, Empty, Modal, PageHeader, Spinner, StatusPill, Tab, Toggle, useToast } from "../ui";
 
 type Provider = "google" | "microsoft" | "smtp";
@@ -20,7 +19,7 @@ export function MailboxesPage() {
   useEffect(() => {
     const connected = searchParams.get("connected");
     const error = searchParams.get("oauth_error");
-    if (connected) toast(`Connected ${connected}`);
+    if (connected) toast(`Connected! ${connected} is ready to use.`);
     if (error) toast(error, "error");
     if (connected || error) setSearchParams({}, { replace: true });
   }, [searchParams, setSearchParams, toast]);
@@ -110,6 +109,9 @@ function MailboxList({ onAdd }: { onAdd: () => void }) {
                     <td className="td text-xs text-ink-500">{m.lastSyncAt ? new Date(m.lastSyncAt).toLocaleTimeString() : "—"}</td>
                     <td className="td">
                       <div className="flex justify-end gap-1">
+                        {m.status === "error" && m.provider !== "smtp" && (
+                          <button className="btn-secondary btn-sm" title={`Sign in to ${m.provider === "google" ? "Google" : "Microsoft"} again to restore this mailbox`} onClick={() => connectWithProvider(ws, m.provider as OAuthKind, m.email)}>Reconnect</button>
+                        )}
                         <button className="btn-ghost btn-sm" title="Check connection and DNS" onClick={() => check.mutate(m.id)} disabled={check.isPending}><RefreshCw size={14} className={cx(check.isPending && check.variables === m.id && "animate-spin")} /></button>
                         <button className="btn-ghost btn-sm" onClick={() => patch.mutate({ id: m.id, body: { status: m.status === "paused" ? "active" : "paused" } })}>{m.status === "paused" ? "Resume" : "Pause"}</button>
                         <button className="btn-ghost btn-sm" title="Settings" onClick={() => setEditing(m)}><Settings2 size={14} /></button>
@@ -339,6 +341,32 @@ const PASSWORD_HINT: Record<Provider, string> = {
   smtp: "Zoho, Fastmail, cPanel hosting, or your own mail server. Your host's help pages list these server settings.",
 };
 
+type OAuthKind = "google" | "microsoft";
+
+// One click: a full-page navigation to our start endpoint, which redirects straight to the provider's official login page.
+// After the user approves, the provider sends them back and the mailbox is connected (see the callback in the API).
+function connectWithProvider(ws: string, provider: OAuthKind, hintEmail?: string) {
+  const params = new URLSearchParams({ timezone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+  if (hintEmail) params.set("hint", hintEmail);
+  window.location.assign(`/v1/workspaces/${ws}/mailboxes/oauth/${provider}/start?${params}`);
+}
+
+function ProviderButton({ provider, busy, disabled, onClick }: { provider: OAuthKind; busy: boolean; disabled: boolean; onClick: () => void }) {
+  const name = provider === "google" ? "Google" : "Microsoft";
+  return (
+    <button
+      className="w-full h-12 rounded-xl border border-ink-200 bg-surface hover:bg-ink-50 hover:border-ink-300 flex items-center justify-center gap-3 text-[15px] font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+      disabled={disabled}
+      onClick={onClick}
+    >
+      {busy
+        ? <span className="h-5 w-5 rounded-full border-2 border-ink-300 border-t-ink-700 animate-spin" aria-hidden />
+        : provider === "google" ? <GoogleMark /> : <MicrosoftMark />}
+      {busy ? `Redirecting to ${name}…` : `Continue with ${name}`}
+    </button>
+  );
+}
+
 function AddMailboxModal({ onClose }: { onClose: () => void }) {
   const ws = useWs();
   const qc = useQueryClient();
@@ -365,30 +393,6 @@ function AddMailboxModal({ onClose }: { onClose: () => void }) {
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setF({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.type === "number" ? Number(e.target.value) : e.target.value });
 
-  const oauth = useQuery({ queryKey: oauthStatusKey(ws), queryFn: () => api<OAuthStatus>(`/v1/workspaces/${ws}/oauth/providers`) });
-  const [redirecting, setRedirecting] = useState(false);
-  const [help, setHelp] = useState<"google" | "microsoft" | null>(null);
-  const [guide, setGuide] = useState<GuideProvider | null>(null);
-  const startOAuth = async (p: "google" | "microsoft") => {
-    setRedirecting(true);
-    try {
-      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-      const r = await api<{ url: string }>(`/v1/workspaces/${ws}/mailboxes/oauth/${p}/start?timezone=${encodeURIComponent(tz)}`);
-      window.location.href = r.url;
-    } catch (e) {
-      toast((e as Error).message, "error");
-      setRedirecting(false);
-    }
-  };
-  const me = useMe();
-  const isAdmin = ["owner", "admin"].includes(me.data?.workspaces.find((w) => w.slug === ws)?.role ?? "");
-  // Configured: open the Login dialog. Not configured: admins add the Client ID and Secret first; others are told who can.
-  const openProvider = (p: "google" | "microsoft") => {
-    if (oauth.data?.[p].configured) return setGuide(p);
-    if (isAdmin) return setHelp(p);
-    toast(`${p === "google" ? "Google" : "Microsoft"} login isn't set up yet. Ask a workspace admin to add the Client ID in Settings → Integrations.`, "error");
-  };
-
   const fileRef = useRef<HTMLInputElement>(null);
   const [bulkResult, setBulkResult] = useState<{ connected: number; failed: number; results: { row: number; email: string; ok: boolean; error?: string }[] } | null>(null);
   const bulk = useMutation({
@@ -399,46 +403,52 @@ function AddMailboxModal({ onClose }: { onClose: () => void }) {
     onError: (e: Error) => toast(e.message, "error"),
   });
 
+  // Clicking a provider navigates straight to Google/Microsoft. The button shows a loading state until the page leaves.
+  const [connecting, setConnecting] = useState<OAuthKind | null>(null);
+  const [showOther, setShowOther] = useState(false);
+  const connect = (p: OAuthKind) => { setConnecting(p); connectWithProvider(ws, p); };
+  useEffect(() => {
+    // Coming back with the browser's Back button restores this page as it was; make the buttons usable again.
+    const reset = (e: PageTransitionEvent) => { if (e.persisted) setConnecting(null); };
+    window.addEventListener("pageshow", reset);
+    return () => window.removeEventListener("pageshow", reset);
+  }, []);
+
   if (bulkResult) return <BulkResultModal result={bulkResult} onClose={onClose} />;
-  if (help) return <OAuthSetupModal provider={help} status={oauth.data?.[help]} saveLabel="Save and log in" onClose={() => setHelp(null)}
-    onSaved={() => { const p = help; setHelp(null); void startOAuth(p); }} />;
-  if (guide) return <ProviderGuideModal provider={guide} busy={redirecting} onClose={onClose} onLogin={() => startOAuth(guide)} />;
-
-  const section = "px-5 py-4";
-  const heading = "text-sm font-semibold text-ink-900 mb-1.5 px-3";
-  const googleOn = !!oauth.data?.google.configured;
-  const microsoftOn = !!oauth.data?.microsoft.configured;
-
   return (
-    <Modal open onClose={onClose} title="Connect a new email account" subtitle="Select a method to add email accounts to your workspace." icon={<Mail size={20} />} wide={!!provider} flush={!provider} footer={provider ? <>
+    <Modal open onClose={onClose} title="Connect a new email account" subtitle="Choose your email provider to get started." icon={<Mail size={20} />} wide={!!provider} flush={!provider} footer={provider ? <>
       <button className="btn-ghost mr-auto" onClick={() => { setProvider(null); setTest(null); }}>Back</button>
       <button className="btn-secondary" disabled={runTest.isPending || !f.email || !f.password} onClick={() => runTest.mutate()}>{runTest.isPending ? "Testing…" : "Test connection"}</button>
       <button className="btn-primary" disabled={create.isPending || !f.email || !f.password || !f.fromName} onClick={() => create.mutate()}>{create.isPending ? "Connecting…" : "Connect"}</button>
     </> : undefined}>
       {!provider ? (
-        <div className="divide-y divide-ink-100">
-          <div className={section}>
-            <div className={heading}>Connect existing inboxes</div>
-            <ChooserRow icon={<GoogleMark />} title="Google" sub={redirecting ? "Redirecting…" : !googleOn && isAdmin ? "Gmail / GSuite · add the Client ID to enable" : "Gmail / GSuite"} onClick={() => openProvider("google")} />
-            <ChooserRow icon={<MicrosoftMark />} title="Microsoft 365 / Outlook" sub={!microsoftOn && isAdmin ? "Add the Client ID to enable" : undefined} onClick={() => openProvider("microsoft")} />
-          </div>
-          <div className={section}>
-            <div className={heading}>Manual setup</div>
-            <ChooserRow icon={<Mail size={17} className="text-ink-600" />} title="Connect email (IMAP / SMTP)" onClick={() => setProvider("smtp")} />
-            <ChooserRow
-              icon={<FileText size={17} className="text-ink-600" />}
-              title="Bulk connect email (IMAP / SMTP)"
-              sub={bulk.isPending ? "Testing each mailbox… this can take a minute" : undefined}
-              right={
-                <span className="flex items-center gap-4 text-sm font-medium text-ink-600">
-                  <button className="flex items-center gap-1.5 hover:text-ink-900" onClick={downloadSample}>Sample <Download size={15} /></button>
-                  <button className="flex items-center gap-1.5 hover:text-ink-900 disabled:opacity-50" disabled={bulk.isPending} onClick={() => fileRef.current?.click()}>
-                    {bulk.isPending ? "Uploading…" : "Upload CSV"} <Upload size={15} />
-                  </button>
-                  <input ref={fileRef} type="file" accept=".csv,text/csv" className="hidden" onChange={(e) => { const file = e.target.files?.[0]; if (file) bulk.mutate(file); e.target.value = ""; }} />
-                </span>
-              }
-            />
+        <div className="px-5 py-6 space-y-3">
+          <ProviderButton provider="google" busy={connecting === "google"} disabled={!!connecting} onClick={() => connect("google")} />
+          <ProviderButton provider="microsoft" busy={connecting === "microsoft"} disabled={!!connecting} onClick={() => connect("microsoft")} />
+          <p className="text-xs text-ink-500 text-center pt-1">You'll sign in on Google's or Microsoft's own page and approve access. We never see your password.</p>
+          <div className="border-t border-ink-100 pt-3">
+            <button className="w-full text-center text-sm text-ink-500 hover:text-ink-800 py-1.5" onClick={() => setShowOther((o) => !o)} aria-expanded={showOther}>
+              {showOther ? "Hide other options" : "Other email provider (IMAP / SMTP)"}
+            </button>
+            {showOther && (
+              <div className="mt-2">
+                <ChooserRow icon={<Mail size={17} className="text-ink-600" />} title="Connect email (IMAP / SMTP)" onClick={() => setProvider("smtp")} />
+                <ChooserRow
+                  icon={<FileText size={17} className="text-ink-600" />}
+                  title="Bulk connect email (IMAP / SMTP)"
+                  sub={bulk.isPending ? "Testing each mailbox… this can take a minute" : undefined}
+                  right={
+                    <span className="flex items-center gap-4 text-sm font-medium text-ink-600">
+                      <button className="flex items-center gap-1.5 hover:text-ink-900" onClick={downloadSample}>Sample <Download size={15} /></button>
+                      <button className="flex items-center gap-1.5 hover:text-ink-900 disabled:opacity-50" disabled={bulk.isPending} onClick={() => fileRef.current?.click()}>
+                        {bulk.isPending ? "Uploading…" : "Upload CSV"} <Upload size={15} />
+                      </button>
+                      <input ref={fileRef} type="file" accept=".csv,text/csv" className="hidden" onChange={(e) => { const file = e.target.files?.[0]; if (file) bulk.mutate(file); e.target.value = ""; }} />
+                    </span>
+                  }
+                />
+              </div>
+            )}
           </div>
         </div>
       ) : (
@@ -478,48 +488,6 @@ function AddMailboxModal({ onClose }: { onClose: () => void }) {
           )}
         </div>
       )}
-    </Modal>
-  );
-}
-
-interface Guide { title: string; mark: ReactNode; heading?: string; intro?: string; steps: ReactNode[]; help?: { href: string; text: string } }
-type GuideProvider = "google" | "microsoft";
-
-const PROVIDER_GUIDES: Record<GuideProvider, Guide> = {
-  google: {
-    title: "Connect a Google mailbox",
-    mark: <GmailMark />,
-    intro: "Connect a Gmail or Google Workspace mailbox. You'll sign in with Google and approve access to send and read email for that mailbox. If your Workspace restricts third-party apps, your admin may need to allow this app first.",
-    steps: [],
-  },
-  microsoft: {
-    title: "Connect a new Outlook account",
-    mark: <MicrosoftMark />,
-    heading: "Enable SMTP to access your Outlook workspace",
-    steps: [
-      <>Open the <a className="text-brand-700 underline" href="https://admin.microsoft.com" target="_blank" rel="noreferrer">Microsoft 365 admin center</a> and go to Users &gt; Active users.</>,
-      <>Select the user, and in the right panel that appears, click Mail.</>,
-      <>In the Email apps section, click Manage email apps.</>,
-      <>Verify the Authenticated SMTP setting: unchecked = disabled, checked = enabled. It has to be enabled.</>,
-      <>When you're finished, click Save changes.</>,
-      <>Now you are ready to authenticate, click the "Login" button below.</>,
-    ],
-    help: { href: "https://learn.microsoft.com/en-us/exchange/clients-and-mobile-in-exchange-online/authenticated-client-smtp-submission", text: "For more detailed instructions follow Microsoft's guide." },
-  },
-};
-
-function ProviderGuideModal({ provider, busy, onClose, onLogin }: { provider: GuideProvider; busy: boolean; onClose: () => void; onLogin: () => void }) {
-  const g = PROVIDER_GUIDES[provider];
-  return (
-    <Modal open onClose={onClose} title={g.title} icon={g.mark} footer={
-      <button className="btn-primary w-full h-11" disabled={busy} onClick={onLogin}>{busy ? "Redirecting…" : "Login"}</button>
-    }>
-      <div className="space-y-4 text-[15px] text-ink-700">
-        {g.heading && <p className="font-semibold text-ink-900">{g.heading}</p>}
-        {g.intro && <p className="leading-relaxed">{g.intro}</p>}
-        {g.steps.length > 0 && <ol className="space-y-4">{g.steps.map((step, i) => <li key={i}>{i + 1}. {step}</li>)}</ol>}
-        {g.help && <a className="block text-brand-700 underline" href={g.help.href} target="_blank" rel="noreferrer">{g.help.text}</a>}
-      </div>
     </Modal>
   );
 }

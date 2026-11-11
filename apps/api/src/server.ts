@@ -1,5 +1,6 @@
 import "@outreach/db";
 import cookie from "@fastify/cookie";
+import { envOAuthCreds } from "@outreach/core";
 import cors from "@fastify/cors";
 import Fastify from "fastify";
 import { loadApiKey, loadUser, loadWorkspace } from "./auth";
@@ -57,5 +58,11 @@ await app.register(sequenceRoutes);
 await app.register(inboxRoutes);
 await app.register(analyticsRoutes);
 await app.register(trackingRoutes);
+
+// Owner-facing: tell whoever runs the server which sign-in providers are not configured.
+const PROVIDER_ENV = { google: ["Google", "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET"], microsoft: ["Microsoft", "MICROSOFT_CLIENT_ID and MICROSOFT_CLIENT_SECRET"] } as const;
+for (const p of ["google", "microsoft"] as const) {
+  if (!envOAuthCreds(p)) app.log.warn(`${PROVIDER_ENV[p][0]} login and mailbox connection are disabled. Set ${PROVIDER_ENV[p][1]} in .env and restart the API.`);
+}
 
 await app.listen({ port: Number(process.env.API_PORT ?? 4000), host: "0.0.0.0" });

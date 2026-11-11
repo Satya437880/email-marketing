@@ -7,5 +7,4 @@ export * from "./reply";
 export * from "./tracking";
 export * from "./sequences";
 export * from "./oauth";
-export * from "./oauth-apps";
 export * from "./webhooks";

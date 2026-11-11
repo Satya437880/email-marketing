@@ -371,17 +371,6 @@ export const messages = pgTable("messages", {
   index("messages_thread").on(t.threadId, t.sentAt),
 ]);
 
-// Google / Microsoft sign-in app credentials a workspace pasted in. The secret is stored encrypted (same key as mailbox credentials).
-export const oauthApps = pgTable("oauth_apps", {
-  id: id(),
-  workspaceId: ws(),
-  provider: text("provider").$type<"google" | "microsoft">().notNull(),
-  clientId: text("client_id").notNull(),
-  clientSecret: text("client_secret").notNull(),
-  tenant: text("tenant"),
-  createdAt: createdAt(),
-}, (t) => [uniqueIndex("oauth_apps_ws_provider").on(t.workspaceId, t.provider)]);
-
 export const WEBHOOK_EVENTS = ["reply.received", "label.changed", "email.sent", "contact.bounced", "contact.unsubscribed", "sequence.completed"] as const;
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
 

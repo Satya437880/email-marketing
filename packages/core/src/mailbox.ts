@@ -1,8 +1,7 @@
 import { db, decryptJson, encryptJson, mailboxes } from "@outreach/db";
 import { PROVIDER_SERVERS, type MailboxAuth, type ServerConfig } from "@outreach/mail";
 import { eq } from "drizzle-orm";
-import { refreshAccessToken } from "./oauth";
-import { getOAuthCreds } from "./oauth-apps";
+import { envOAuthCreds, refreshAccessToken } from "./oauth";
 
 type PasswordAuth = { type: "password"; user: string; pass: string };
 type StoredOAuth = { type: "oauth"; user: string; refreshToken: string; accessToken: string; expiresAt: number };
@@ -34,9 +33,9 @@ export async function connectionFor(mailbox: typeof mailboxes.$inferSelect): Pro
     if (!pending) {
       const provider = mailbox.provider === "microsoft" ? "microsoft" : "google";
       pending = (async () => {
-        const resolved = await getOAuthCreds(mailbox.workspaceId, provider);
-        if (!resolved) throw new Error("the Google/Microsoft sign-in credentials were removed");
-        const t = await refreshAccessToken(provider, oauth.refreshToken, resolved.creds);
+        const creds = envOAuthCreds(provider);
+        if (!creds) throw new Error("Google/Microsoft sign-in is no longer configured on the server");
+        const t = await refreshAccessToken(provider, oauth.refreshToken, creds);
         const next: StoredOAuth = { ...oauth, ...t };
         await db.update(mailboxes).set({ credentials: sealCredentials({ server: c.server, auth: next }) }).where(eq(mailboxes.id, mailbox.id));
         return next;

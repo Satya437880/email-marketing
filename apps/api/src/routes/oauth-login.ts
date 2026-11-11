@@ -1,4 +1,4 @@
-import { envOAuthCreds, exchangeLoginCode, loginAuthorizationUrl, signState, verifyState, type OAuthProvider } from "@outreach/core";
+import { describeOAuthFailure, envOAuthCreds, exchangeLoginCode, loginAuthorizationUrl, signState, verifyState, type OAuthProvider } from "@outreach/core";
 import { db, users } from "@outreach/db";
 import { eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
@@ -27,7 +27,10 @@ export async function oauthLoginRoutes(app: FastifyInstance) {
     if (!parsed.success) return fail("Unknown login provider.");
     const provider = parsed.data;
     const creds = envOAuthCreds(provider);
-    if (!creds) return fail(`${label(provider)} login isn't configured. Add ${envNames[provider]} to the server's .env file, then restart the API.`);
+    if (!creds) {
+      req.log.error(`${label(provider)} login was requested but the server has no credentials. Set ${envNames[provider]} in .env and restart the API.`);
+      return fail(`${label(provider)} login isn't available right now. Please log in with your email and password.`);
+    }
 
     const state = signState({ purpose: "login", ws: "", userId: "", provider, timezone: "UTC" });
     // Ties this attempt to this browser, so a callback link can't be used to log someone else in.
@@ -52,14 +55,24 @@ export async function oauthLoginRoutes(app: FastifyInstance) {
     if (q.error) return fail(q.error === "access_denied" ? "Login was cancelled." : q.error_description ?? q.error);
     if (!q.code) return fail("The provider didn't return a login code. Please try again.");
     const creds = envOAuthCreds(provider);
-    if (!creds) return fail(`${label(provider)} login isn't configured. Add ${envNames[provider]} to the server's .env file.`);
+    if (!creds) {
+      req.log.error(`${label(provider)} login callback arrived but the server has no credentials. Set ${envNames[provider]} in .env.`);
+      return fail(`${label(provider)} login isn't available right now. Please log in with your email and password.`);
+    }
 
     let resolution;
     try {
       resolution = await resolveOAuthLogin(await exchangeLoginCode(provider, q.code, creds));
     } catch (e) {
-      req.log.warn(e);
-      return fail((e as Error).message);
+      const raw = (e as Error).message;
+      if (!/token error/.test(raw)) {
+        req.log.warn(e);
+        return fail(raw);
+      }
+      const { message, ownerProblem } = describeOAuthFailure(provider, raw);
+      if (ownerProblem) req.log.error(e, "login OAuth app is misconfigured (check the client ID, secret and redirect URI)");
+      else req.log.warn(e);
+      return fail(message);
     }
     if (!resolution.ok) return fail(resolution.message);
 

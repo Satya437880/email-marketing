@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { BarChart3, Check, ChevronsLeft, ChevronsRight, Inbox, LogOut, Mail, Menu, Monitor, Moon, Send, Settings, Sun, Users, X } from "lucide-react";
+import { BarChart3, Check, ChevronsLeft, ChevronsRight, Inbox, LogOut, Mail, Menu, Moon, Send, Settings, Sun, Users, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { api, type Me, type Workspace } from "./api";
@@ -19,7 +19,6 @@ export function Logo({ collapsed }: { collapsed?: boolean }) {
 const THEMES: { k: ThemePref; label: string; icon: ReactNode }[] = [
   { k: "light", label: "Light", icon: <Sun size={16} /> },
   { k: "dark", label: "Dark", icon: <Moon size={16} /> },
-  { k: "system", label: "System", icon: <Monitor size={16} /> },
 ];
 
 function ThemeMenu({ collapsed }: { collapsed: boolean }) {
@@ -40,7 +39,7 @@ function ThemeMenu({ collapsed }: { collapsed: boolean }) {
         onClick={() => setOpen((o) => !o)}
         title={collapsed ? `Theme: ${current.label}` : undefined}
       >
-        <Monitor size={18} />
+        {pref === "dark" ? <Moon size={18} /> : <Sun size={18} />}
         {!collapsed && <><span className="flex-1 text-left">Theme</span><span className="text-xs font-normal text-ink-500">{current.label}</span></>}
       </button>
       {open && (

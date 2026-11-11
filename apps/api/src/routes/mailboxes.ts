@@ -1,5 +1,5 @@
 import {
-  authorizationUrl, connectionFor, deleteOAuthCreds, exchangeCode, getOAuthCreds, oauthStatus, saveOAuthCreds, sealCredentials, signState, verifyOAuthCreds, verifyState,
+  authorizationUrl, connectionFor, describeOAuthFailure, envOAuthCreds, exchangeCode, sealCredentials, signState, verifyState,
   type OAuthProvider, type StoredCredentials,
 } from "@outreach/core";
 import { db, decryptJson, domains, mailboxes, mailboxDailyStats, senderProfileMailboxes, senderProfiles, sequenceSenders } from "@outreach/db";
@@ -86,71 +86,72 @@ async function ensureDomain(workspaceId: string, email: string) {
 }
 
 const oauthProvider = z.enum(["google", "microsoft"]);
+const providerName = (p: OAuthProvider) => (p === "google" ? "Google" : "Microsoft");
+const ENV_NAMES: Record<OAuthProvider, string> = {
+  google: "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET",
+  microsoft: "MICROSOFT_CLIENT_ID and MICROSOFT_CLIENT_SECRET",
+};
 
 export async function mailboxRoutes(app: FastifyInstance) {
-  const oauthName = (p: OAuthProvider) => (p === "google" ? "Google" : "Microsoft");
+  // One click: a plain browser navigation that sends the user straight to Google's or Microsoft's login page.
+  // Problems come back to the Mailboxes page as a message instead of a blank error screen.
+  app.get("/v1/workspaces/:ws/mailboxes/oauth/:provider/start", async (req, reply) => {
+    const wsSlug = req.workspace!.slug;
+    const fail = (m: string) => reply.redirect(`/${wsSlug}/senders?${new URLSearchParams({ oauth_error: m })}`, 302);
+    if (!["owner", "admin", "member"].includes(req.role ?? "")) return fail("You don't have permission to connect mailboxes.");
+    const parsed = oauthProvider.safeParse((req.params as { provider: string }).provider);
+    if (!parsed.success) return fail("Unknown email provider.");
+    const provider = parsed.data;
 
-  app.get("/v1/workspaces/:ws/oauth/providers", async (req) => oauthStatus(wsId(req)));
-
-  // Saves the Google/Microsoft app credentials a workspace pasted in. The secret is checked with the provider first and stored encrypted.
-  app.put("/v1/workspaces/:ws/oauth/:provider", async (req) => {
-    requireRole(req, "owner", "admin");
-    const provider = oauthProvider.parse((req.params as { provider: string }).provider);
-    const b = body(req, z.object({
-      clientId: z.string().trim().min(10, "Paste the full Client ID").max(300),
-      clientSecret: z.string().trim().min(6, "Paste the Client Secret").max(500),
-      tenant: z.string().trim().max(200).optional(),
-    }));
-    const creds = { clientId: b.clientId, clientSecret: b.clientSecret, tenant: provider === "microsoft" ? b.tenant || null : null };
-    const check = await verifyOAuthCreds(provider, creds);
-    if (check === "rejected") {
-      throw new HttpError(400, "credentials_rejected", `${oauthName(provider)} didn't accept this Client ID and Secret. Check that you copied both in full, and that the secret hasn't expired.`);
+    const creds = envOAuthCreds(provider);
+    if (!creds) {
+      req.log.error(`${providerName(provider)} connection was requested but the server has no credentials. Set ${ENV_NAMES[provider]} in .env and restart the API.`);
+      return fail(`${providerName(provider)} connection isn't available right now. Please contact support.`);
     }
-    await saveOAuthCreds(wsId(req), provider, creds);
-    return { ok: true, verified: check === "ok" };
+    const q = req.query as { timezone?: string; hint?: string };
+    const hint = q.hint && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(q.hint) ? q.hint : undefined;
+    const state = signState({ purpose: "mailbox", ws: wsSlug, userId: req.user!.id, provider, timezone: q.timezone || "UTC" });
+    return reply.redirect(authorizationUrl(provider, state, creds, hint), 302);
   });
 
-  app.delete("/v1/workspaces/:ws/oauth/:provider", async (req) => {
-    requireRole(req, "owner", "admin");
-    const provider = oauthProvider.parse((req.params as { provider: string }).provider);
-    await deleteOAuthCreds(wsId(req), provider);
-    return { ok: true };
-  });
-
-  app.get("/v1/workspaces/:ws/mailboxes/oauth/:provider/start", async (req) => {
-    requireRole(req, "owner", "admin", "member");
-    const provider = oauthProvider.parse((req.params as { provider: string }).provider);
-    const q = req.query as { timezone?: string };
-    const resolved = await getOAuthCreds(wsId(req), provider);
-    if (!resolved) throw new HttpError(400, "oauth_not_configured", `${oauthName(provider)} sign-in isn't set up yet. Add the Client ID and Secret first.`);
-    const state = signState({ purpose: "mailbox", ws: req.workspace!.slug, userId: req.user!.id, provider, timezone: q.timezone || "UTC" });
-    return { url: authorizationUrl(provider, state, resolved.creds) };
-  });
-
-  // The provider redirects the browser here. Always answer with a redirect back into the app so errors are visible.
+  // The provider redirects the browser here. Always answer with a redirect back into the app so the outcome is visible.
   app.get("/v1/oauth/:provider/callback", async (req, reply) => {
     const q = req.query as { code?: string; state?: string; error?: string; error_description?: string };
     const back = (ws: string | null, params: Record<string, string>) =>
       reply.redirect(`${ws ? `/${ws}/senders` : "/"}?${new URLSearchParams(params)}`, 302);
     const state = q.state ? verifyState(q.state) : null;
-    if (!state || state.purpose !== "mailbox") return back(null, { oauth_error: "This sign-in link expired. Please try again." });
-    if (q.error) return back(state.ws, { oauth_error: q.error_description ?? q.error });
-    if (!req.user || req.user.id !== state.userId) return back(state.ws, { oauth_error: "Please log in to the app as the same user and try again." });
+    if (!state || state.purpose !== "mailbox") return back(null, { oauth_error: "This connection link expired. Please try again." });
 
-    const provider = oauthProvider.parse((req.params as { provider: string }).provider);
+    const parsed = oauthProvider.safeParse((req.params as { provider: string }).provider);
+    if (!parsed.success || parsed.data !== state.provider) return back(state.ws, { oauth_error: "This connection link expired. Please try again." });
+    const provider = parsed.data;
+    const name = providerName(provider);
+
+    if (q.error) {
+      req.log.warn({ error: q.error, description: q.error_description }, "provider returned an error");
+      return back(state.ws, { oauth_error: q.error === "access_denied" ? "You cancelled the connection. No changes were made." : `${name} couldn't complete the sign-in (${q.error}). Please try again.` });
+    }
+    if (!req.user || req.user.id !== state.userId) return back(state.ws, { oauth_error: "Please log in to the app as the same user and try again." });
     const workspace = await db.query.workspaces.findFirst({ where: (w, { eq: e }) => e(w.slug, state.ws) });
-    if (!workspace || !q.code) return back(state.ws, { oauth_error: "Missing workspace or code" });
+    if (!workspace || !q.code) return back(state.ws, { oauth_error: `${name} didn't return a sign-in code. Please try again.` });
 
     try {
-      const resolved = await getOAuthCreds(workspace.id, provider);
-      if (!resolved) return back(state.ws, { oauth_error: `${oauthName(provider)} sign-in credentials are missing. Add them in Settings → Integrations.` });
-      const tokens = await exchangeCode(provider, q.code, resolved.creds);
+      const creds = envOAuthCreds(provider);
+      if (!creds) {
+        req.log.error(`${name} callback arrived but the server has no credentials. Set ${ENV_NAMES[provider]} in .env.`);
+        return back(state.ws, { oauth_error: `${name} connection isn't available right now. Please contact support.` });
+      }
+      const tokens = await exchangeCode(provider, q.code, creds);
       const server = PROVIDER_SERVERS[provider];
       const test = await testConnection(server, { type: "oauth2", user: tokens.email, accessToken: tokens.accessToken });
       if (!test.smtp.ok || !test.imap.ok) {
-        const why = [test.smtp.error && `SMTP: ${test.smtp.error}`, test.imap.error && `IMAP: ${test.imap.error}`].filter(Boolean).join(" | ");
-        return back(state.ws, { oauth_error: `Signed in as ${tokens.email}, but the mailbox refused the connection. ${why}` });
+        req.log.warn({ email: tokens.email, smtp: test.smtp.error, imap: test.imap.error }, "mailbox refused the connection after sign-in");
+        const hint = provider === "google"
+          ? "If this is a Google Workspace account, ask your administrator to turn on IMAP and allow this app."
+          : "Ask your Microsoft 365 administrator to enable Authenticated SMTP for this mailbox.";
+        return back(state.ws, { oauth_error: `You signed in as ${tokens.email}, but ${name} didn't allow mail access. ${hint}` });
       }
+      // Tokens are stored encrypted; the refresh token keeps the connection alive without asking the user again.
       const credentials = sealCredentials({
         server,
         auth: { type: "oauth", user: tokens.email, refreshToken: tokens.refreshToken, accessToken: tokens.accessToken, expiresAt: tokens.expiresAt },
@@ -166,8 +167,10 @@ export async function mailboxRoutes(app: FastifyInstance) {
       });
       return back(state.ws, { connected: tokens.email });
     } catch (e) {
-      req.log.warn(e);
-      return back(state.ws, { oauth_error: (e as Error).message });
+      const { message, ownerProblem } = describeOAuthFailure(provider, (e as Error).message);
+      if (ownerProblem) req.log.error(e, `${name} OAuth app is misconfigured (check the client ID, secret and redirect URI)`);
+      else req.log.warn(e);
+      return back(state.ws, { oauth_error: message });
     }
   });
 

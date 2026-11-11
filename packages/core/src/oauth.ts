@@ -82,7 +82,8 @@ export function verifyState(state: string): OAuthState | null {
   return s.exp > Date.now() ? s : null;
 }
 
-export function authorizationUrl(provider: OAuthProvider, state: string, creds: OAuthCreds): string {
+// loginHint preselects an account on the provider's page (used when reconnecting a known mailbox).
+export function authorizationUrl(provider: OAuthProvider, state: string, creds: OAuthCreds, loginHint?: string): string {
   const c = config(provider, creds);
   const params = new URLSearchParams({
     client_id: creds.clientId,
@@ -91,6 +92,7 @@ export function authorizationUrl(provider: OAuthProvider, state: string, creds: 
     scope: c.scopes.join(" "),
     state,
     ...c.extraAuthParams,
+    ...(loginHint ? { login_hint: loginHint } : {}),
   });
   return `${c.authUrl}?${params}`;
 }
@@ -109,7 +111,7 @@ async function tokenRequest(provider: OAuthProvider, creds: OAuthCreds, params: 
     body: new URLSearchParams({ client_id: creds.clientId, client_secret: creds.clientSecret, ...params }),
   });
   const data = (await res.json()) as Record<string, string | number>;
-  if (!res.ok) throw new Error(`${provider} token error: ${data.error_description ?? data.error ?? res.status}`);
+  if (!res.ok) throw new Error(`${provider} token error: ${data.error ?? res.status}${data.error_description ? ` (${data.error_description})` : ""}`);
   return data;
 }
 
@@ -141,24 +143,6 @@ export async function refreshAccessToken(provider: OAuthProvider, refreshToken: 
     refreshToken: data.refresh_token ? String(data.refresh_token) : refreshToken,
     expiresAt: Date.now() + Number(data.expires_in ?? 3600) * 1000,
   };
-}
-
-// Asks the provider's token endpoint about the client with a throwaway code. A wrong client ID or secret is rejected
-// outright; a correct one fails later on the fake code. Network trouble returns "unverified" so a flaky connection never blocks saving.
-export async function verifyOAuthCreds(provider: OAuthProvider, creds: OAuthCreds): Promise<"ok" | "rejected" | "unverified"> {
-  try {
-    const c = config(provider, creds);
-    const res = await fetch(c.tokenUrl, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      signal: AbortSignal.timeout(10_000),
-      body: new URLSearchParams({ client_id: creds.clientId, client_secret: creds.clientSecret, grant_type: "authorization_code", code: "credential-check", redirect_uri: redirectUri(provider) }),
-    });
-    const data = (await res.json().catch(() => ({}))) as { error?: string };
-    return data.error === "invalid_client" || data.error === "unauthorized_client" ? "rejected" : "ok";
-  } catch {
-    return "unverified";
-  }
 }
 
 // ---- Logging in to the app itself with Google / Microsoft (identity only; no mailbox access is requested) ----
@@ -218,4 +202,18 @@ export async function exchangeLoginCode(provider: OAuthProvider, code: string, c
   const data = await tokenRequest(provider, creds, { grant_type: "authorization_code", code, redirect_uri: loginRedirectUri(provider) });
   if (!data.id_token) throw new Error("The provider didn't return an identity token");
   return profileFromIdToken(provider, decodeIdToken(String(data.id_token)), creds.clientId);
+}
+
+// What a person sees when a sign-in or mailbox connection fails. The technical text is for the server log only.
+// ownerProblem means the app's own Google/Microsoft registration is wrong, which only the server owner can fix.
+export function describeOAuthFailure(provider: OAuthProvider, raw: string): { message: string; ownerProblem: boolean } {
+  const name = provider === "google" ? "Google" : "Microsoft";
+  if (/invalid_client|unauthorized_client|invalid client|OAuth client was not found|redirect_uri_mismatch|AADSTS7000215|AADSTS700016|AADSTS50011|AADSTS70011/i.test(raw)) {
+    return { message: `${name} connection isn't set up correctly. Please contact support.`, ownerProblem: true };
+  }
+  if (/invalid_grant|expired|AADSTS70008|AADSTS54005/i.test(raw)) return { message: "That sign-in expired or was already used. Please try again.", ownerProblem: false };
+  if (/refresh token/i.test(raw)) {
+    return { message: `${name} didn't allow ongoing access. Remove this app from your ${name} account's connected apps, then try again.`, ownerProblem: false };
+  }
+  return { message: `We couldn't connect your ${name} account. Please try again.`, ownerProblem: false };
 }

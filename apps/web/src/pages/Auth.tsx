@@ -12,7 +12,6 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
   const [error, setError] = useState<string | null>(params.get("error"));
   // Only providers the server is configured for are offered, so every button leads somewhere.
   const providers = useQuery({ queryKey: ["auth-providers"], queryFn: () => api<{ google: boolean; microsoft: boolean }>("/v1/auth/providers"), staleTime: 60_000 });
-  const verb = mode === "login" ? "Login" : "Sign up";
   const [busy, setBusy] = useState(false);
   const nav = useNavigate();
   const qc = useQueryClient();
@@ -58,8 +57,8 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
             <>
               <div className="flex items-center gap-3 my-6 text-xs text-ink-400"><span className="h-px flex-1 bg-ink-200" />or<span className="h-px flex-1 bg-ink-200" /></div>
               <div className="space-y-3">
-                {providers.data.google && <a className="btn-secondary w-full h-10" href="/v1/auth/oauth/google/start"><GoogleMark /> {verb} with Google</a>}
-                {providers.data.microsoft && <a className="btn-secondary w-full h-10" href="/v1/auth/oauth/microsoft/start"><MicrosoftMark /> {verb} with Microsoft</a>}
+                {providers.data.google && <a className="btn-secondary w-full h-10" href="/v1/auth/oauth/google/start"><GoogleMark /> Continue with Google</a>}
+                {providers.data.microsoft && <a className="btn-secondary w-full h-10" href="/v1/auth/oauth/microsoft/start"><MicrosoftMark /> Continue with Microsoft</a>}
               </div>
             </>
           )}
