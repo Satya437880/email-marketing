@@ -8,3 +8,4 @@ export * from "./tracking";
 export * from "./sequences";
 export * from "./oauth";
 export * from "./webhooks";
+export * from "./manual";

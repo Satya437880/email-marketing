@@ -139,6 +139,7 @@ const STATUS: Record<string, string> = {
   paused: "bg-amber-50 text-amber-700",
   draft: "bg-ink-100 text-ink-600",
   error: "bg-red-50 text-red-700",
+  interrupted: "bg-red-50 text-red-700",
   disconnected: "bg-red-50 text-red-700",
   replied: "bg-violet-50 text-violet-700",
   bounced: "bg-red-50 text-red-700",

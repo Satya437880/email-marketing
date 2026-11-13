@@ -13,6 +13,7 @@ export interface OutgoingEmail {
   cc?: string[];
   bcc?: string[];
   headers: Record<string, string>;
+  attachments?: { filename: string; contentType: string; content: Buffer; cid?: string; contentDisposition?: "inline" | "attachment" }[];
 }
 
 export interface ComposeInput {
@@ -28,6 +29,9 @@ export interface ComposeInput {
   thread?: { inReplyTo: string; references: string[] };
   cc?: string[];
   bcc?: string[];
+  attachments?: { name: string; type: string; data: string }[];
+  // Pictures added in the editor are stored as data: URIs. Sending turns them into embedded (cid) images, which inboxes display; the preview keeps them as-is.
+  keepDataImages?: boolean;
 }
 
 export function newMessageId(fromAddress: string): string {
@@ -36,11 +40,24 @@ export function newMessageId(fromAddress: string): string {
 }
 
 export function composeEmail(input: ComposeInput): OutgoingEmail {
-  let html = input.bodyHtml;
-  if (input.signatureHtml) html += `<br><br>${input.signatureHtml}`;
+  // Drop trailing empty lines from the body so the signature sits exactly one blank line below it.
+  const inline: NonNullable<OutgoingEmail["attachments"]> = [];
+  const domain = input.from.address.split("@")[1] ?? "localhost";
+  const source = input.keepDataImages ? input.bodyHtml : input.bodyHtml.replace(/src="data:(image\/[\w.+-]+);base64,([^"]+)"/gi, (_m, type: string, data: string) => {
+    const cid = `img${inline.length + 1}.${randomBytes(6).toString("hex")}@${domain}`;
+    inline.push({ filename: `image${inline.length + 1}.${type.split("/")[1]?.replace("jpeg", "jpg").replace(/\+.*/, "") ?? "png"}`, contentType: type, content: Buffer.from(data, "base64"), cid, contentDisposition: "inline" });
+    return `src="cid:${cid}"`;
+  });
+  let html = source.replace(/(\s|&nbsp;|<br\s*\/?>|<(div|p)>\s*(<br\s*\/?>)?\s*<\/\2>)+$/gi, "");
+  // One blank line = one empty block, so the gap is the same whether the text before it ends in a line or a paragraph.
+  const gap = `<div style="margin:0;padding:0"><br></div>`;
+  const leading = /^(\s|&nbsp;|<br\s*\/?>|<(div|p)>\s*(<br\s*\/?>)?\s*<\/\2>)+/i;
+  if (input.signatureHtml?.replace(leading, "").trim()) html += `${gap}${input.signatureHtml.replace(leading, "")}`;
 
   if (input.optOut) {
-    html += `<br><br><span style="font-size:12px;color:#888">${escapeHtml(input.optOut.text)} <a href="${escapeHtml(input.optOut.url)}">here</a>.</span>`;
+    // Directly under the signature, no blank line (still one blank line after the body if there is no signature).
+    const hasSig = html.endsWith(input.signatureHtml?.replace(leading, "") ?? "\0") && !!input.signatureHtml?.replace(leading, "").trim();
+    html += `${hasSig ? "" : gap}<div style="margin:0;padding:0;font-size:10px;line-height:1.3;color:#888">${escapeHtml(input.optOut.text)} <a href="${escapeHtml(input.optOut.url)}">here</a>.</div>`;
   }
 
   if (!input.plainText && input.clickRewrite) {
@@ -74,6 +91,7 @@ export function composeEmail(input: ComposeInput): OutgoingEmail {
     cc: input.cc,
     bcc: input.bcc,
     headers,
+    attachments: input.attachments?.length || inline.length ? [...(input.attachments ?? []).map((a) => ({ filename: a.name, contentType: a.type, content: Buffer.from(a.data, "base64") })), ...inline] : undefined,
   };
 }
 

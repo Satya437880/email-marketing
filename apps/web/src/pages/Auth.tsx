@@ -1,4 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Eye, EyeOff } from "lucide-react";
 import { useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../api";
@@ -13,6 +14,7 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
   // Only providers the server is configured for are offered, so every button leads somewhere.
   const providers = useQuery({ queryKey: ["auth-providers"], queryFn: () => api<{ google: boolean; microsoft: boolean }>("/v1/auth/providers"), staleTime: 60_000 });
   const [busy, setBusy] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const nav = useNavigate();
   const qc = useQueryClient();
 
@@ -49,7 +51,18 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
               </>
             )}
             <div><label className="label">Email</label><input className="input" type="email" value={form.email} onChange={set("email")} required autoFocus={mode === "login"} /></div>
-            <div><label className="label">Password</label><input className="input" type="password" value={form.password} onChange={set("password")} required minLength={mode === "signup" ? 8 : 1} /></div>
+            <div>
+              <label className="label" htmlFor="auth-password">Password</label>
+              <div className="relative">
+                <input id="auth-password" className="input pr-11" type={showPassword ? "text" : "password"} value={form.password} onChange={set("password")} required minLength={mode === "signup" ? 8 : 1}
+                  autoComplete={mode === "signup" ? "new-password" : "current-password"} />
+                <button type="button" className="absolute right-1.5 top-1/2 -translate-y-1/2 grid place-items-center w-8 h-8 rounded-md text-ink-500 hover:bg-ink-100 hover:text-ink-800"
+                  aria-label={showPassword ? "Hide password" : "Show password"} aria-pressed={showPassword} title={showPassword ? "Hide password" : "Show password"}
+                  onClick={() => setShowPassword((s) => !s)}>
+                  {showPassword ? <EyeOff size={17} /> : <Eye size={17} />}
+                </button>
+              </div>
+            </div>
             {error && <div className="rounded-lg bg-red-50 text-red-700 text-sm px-3 py-2">{error}</div>}
             <button className="btn-primary w-full h-10" disabled={busy}>{busy ? "Please wait…" : mode === "login" ? "Log in" : "Create account"}</button>
           </form>

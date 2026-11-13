@@ -11,6 +11,17 @@ export interface SpamReport {
   rating: "good" | "fair" | "poor";
   wordCount: number;
   issues: SpamIssue[];
+  metrics: SpamMetrics;
+}
+
+// Raw counts behind the score, for the spam-potential panel.
+export interface SpamMetrics {
+  spamWords: number;
+  personalisationPct: number; // spintax + variables as a share of the words
+  links: number;
+  images: number;
+  emojis: number;
+  words: number;
 }
 
 const SPAM_PHRASES = [
@@ -55,5 +66,14 @@ export function spamCheck(subject: string, bodyHtml: string): SpamReport {
   if (/\$\d|€\d|£\d|\d+%\s*off/i.test(lower)) add("money", "Prices or discounts read as promotional", 8);
 
   const score = Math.max(0, 100 - issues.reduce((s, i) => s + i.penalty, 0));
-  return { score, rating: score >= 80 ? "good" : score >= 60 ? "fair" : "poor", wordCount: words.length, issues };
+  const tokens = (`${subject} ${bodyHtml}`.match(/\{\{[^}]+\}\}/g) ?? []).length;
+  const metrics: SpamMetrics = {
+    spamWords: hits.length,
+    personalisationPct: Math.min(100, Math.round((tokens / Math.max(words.length, 1)) * 100)),
+    links,
+    images,
+    emojis: (`${subject} ${text}`.match(/\p{Extended_Pictographic}/gu) ?? []).length,
+    words: words.length,
+  };
+  return { score, rating: score >= 80 ? "good" : score >= 60 ? "fair" : "poor", wordCount: words.length, issues, metrics };
 }

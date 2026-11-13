@@ -99,6 +99,7 @@ export function Shell({ me, workspace, children }: { me: Me; workspace: Workspac
   const items = [
     { to: `${base}/inbox`, label: "Primebox", icon: <Inbox size={18} />, badge: counts.data?.unread },
     { to: `${base}/sequences`, label: "Sequences", icon: <Send size={18} /> },
+    { to: `${base}/emails`, label: "Emails", icon: <Mail size={18} /> },
     { to: `${base}/analytics`, label: "Analytics", icon: <BarChart3 size={18} /> },
     { to: `${base}/senders`, label: "Senders & Mailboxes", icon: <Mail size={18} /> },
     { to: `${base}/contacts`, label: "Contacts", icon: <Users size={18} /> },

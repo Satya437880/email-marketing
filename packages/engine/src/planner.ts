@@ -108,16 +108,18 @@ export interface Step {
   id: string;
   type: StepType;
   delayDays: number;
+  // Extra wait on top of delayDays, for waits shorter than a day. Missing means none.
+  delayMinutes?: number;
 }
 
 // Given the index of the step just completed (-1 before the first send), find the next email step
 // and when it is due. Delay steps between them add up.
 export function nextEmailStep(steps: Step[], afterIndex: number, from: Date): { index: number; dueAt: Date } | null {
-  let days = 0;
+  let ms = 0;
   for (let i = afterIndex + 1; i < steps.length; i++) {
     const step = steps[i]!;
-    if (step.type === "delay") days += step.delayDays;
-    else return { index: i, dueAt: new Date(from.getTime() + days * 86400000) };
+    if (step.type === "delay") ms += step.delayDays * 86400000 + (step.delayMinutes ?? 0) * 60000;
+    else return { index: i, dueAt: new Date(from.getTime() + ms) };
   }
   return null;
 }

@@ -4,7 +4,7 @@ import {
   type SequenceSettings,
 } from "@outreach/db";
 import { composeEmail, render, sendSmtp, spamCheck } from "@outreach/mail";
-import { and, asc, desc, eq, ilike, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { wsId } from "../auth";
@@ -37,18 +37,25 @@ const settingsSchema = z.object({
   trackOpportunities: z.boolean(),
 }).partial();
 
+const ATTACH_MAX_BYTES = 10 * 1024 * 1024;
+
 const stepsSchema = z.object({
   steps: z.array(z.object({
     id: z.string().uuid().optional(),
     type: z.enum(["delay", "email"]),
     name: z.string().max(100).default(""),
     delayDays: z.number().int().min(0).max(365).default(0),
+    delayMinutes: z.number().int().min(0).max(365 * 1440).default(0),
     variants: z.array(z.object({
       id: z.string().uuid().optional(),
       label: z.string().max(5),
       subject: z.string().max(500).default(""),
-      bodyHtml: z.string().max(100000).default(""),
+      bodyHtml: z.string().max(8_000_000).default(""),
       weight: z.number().int().min(0).max(100).default(1),
+      attachments: z.array(z.object({
+        name: z.string().min(1).max(200), type: z.string().max(150).default("application/octet-stream"),
+        size: z.number().int().min(0).max(ATTACH_MAX_BYTES), data: z.string().max(Math.ceil(ATTACH_MAX_BYTES * 1.4)),
+      })).max(5).default([]).refine((a) => a.reduce((t, x) => t + x.size, 0) <= ATTACH_MAX_BYTES, "Attachments are limited to 10 MB per email"),
     })).max(5).default([]),
   })).max(50),
 });
@@ -216,9 +223,9 @@ export async function sequenceRoutes(app: FastifyInstance) {
       for (const [position, s] of b.steps.entries()) {
         let stepId = s.id && existingIds.has(s.id) ? s.id : undefined;
         if (stepId) {
-          await tx.update(sequenceSteps).set({ position, type: s.type, name: s.name, delayDays: s.delayDays }).where(eq(sequenceSteps.id, stepId));
+          await tx.update(sequenceSteps).set({ position, type: s.type, name: s.name, delayDays: s.delayDays, delayMinutes: s.delayMinutes }).where(eq(sequenceSteps.id, stepId));
         } else {
-          stepId = (await tx.insert(sequenceSteps).values({ sequenceId: seq.id, position, type: s.type, name: s.name, delayDays: s.delayDays }).returning())[0]!.id;
+          stepId = (await tx.insert(sequenceSteps).values({ sequenceId: seq.id, position, type: s.type, name: s.name, delayDays: s.delayDays, delayMinutes: s.delayMinutes }).returning())[0]!.id;
         }
         keep.add(stepId);
         const current = await tx.select({ id: stepVariants.id }).from(stepVariants).where(eq(stepVariants.stepId, stepId));
@@ -226,10 +233,10 @@ export async function sequenceRoutes(app: FastifyInstance) {
         const keepVariants = new Set<string>();
         for (const v of s.type === "email" ? s.variants : []) {
           if (v.id && currentIds.has(v.id)) {
-            await tx.update(stepVariants).set({ label: v.label, subject: v.subject, bodyHtml: v.bodyHtml, weight: v.weight }).where(eq(stepVariants.id, v.id));
+            await tx.update(stepVariants).set({ label: v.label, subject: v.subject, bodyHtml: v.bodyHtml, weight: v.weight, attachments: v.attachments }).where(eq(stepVariants.id, v.id));
             keepVariants.add(v.id);
           } else {
-            const [nv] = await tx.insert(stepVariants).values({ stepId, label: v.label, subject: v.subject, bodyHtml: v.bodyHtml, weight: v.weight }).returning();
+            const [nv] = await tx.insert(stepVariants).values({ stepId, label: v.label, subject: v.subject, bodyHtml: v.bodyHtml, weight: v.weight, attachments: v.attachments }).returning();
             keepVariants.add(nv!.id);
           }
         }
@@ -324,8 +331,8 @@ export async function sequenceRoutes(app: FastifyInstance) {
     const steps = await loadSteps(seq.id);
     const [copy] = await db.insert(sequences).values({ workspaceId: seq.workspaceId, name: `${seq.name} (copy)`, priority: seq.priority, settings: seq.settings }).returning();
     for (const s of steps) {
-      const [ns] = await db.insert(sequenceSteps).values({ sequenceId: copy!.id, position: s.position, type: s.type, name: s.name, delayDays: s.delayDays }).returning();
-      if (s.variants.length) await db.insert(stepVariants).values(s.variants.map((v) => ({ stepId: ns!.id, label: v.label, subject: v.subject, bodyHtml: v.bodyHtml, weight: v.weight })));
+      const [ns] = await db.insert(sequenceSteps).values({ sequenceId: copy!.id, position: s.position, type: s.type, name: s.name, delayDays: s.delayDays, delayMinutes: s.delayMinutes }).returning();
+      if (s.variants.length) await db.insert(stepVariants).values(s.variants.map((v) => ({ stepId: ns!.id, label: v.label, subject: v.subject, bodyHtml: v.bodyHtml, weight: v.weight, attachments: v.attachments })));
     }
     const senders = await db.select({ id: senderProfiles.id, owner: senderProfiles.ownerSequenceId }).from(sequenceSenders)
       .innerJoin(senderProfiles, eq(senderProfiles.id, sequenceSenders.senderProfileId)).where(eq(sequenceSenders.sequenceId, seq.id));
@@ -352,17 +359,28 @@ export async function sequenceRoutes(app: FastifyInstance) {
 
   app.get("/v1/workspaces/:ws/sequences/:id/contacts", async (req) => {
     const p = params(req, idParams);
-    const q = query(req, z.object({ state: z.string().optional(), q: z.string().optional(), page: z.coerce.number().int().min(1).default(1), pageSize: z.coerce.number().int().min(1).max(100).default(20) }));
+    const q = query(req, z.object({
+      state: z.string().optional(), q: z.string().optional(), mailboxId: z.string().uuid().optional(),
+      engagement: z.enum(["opened", "not_opened", "clicked", "replied"]).optional(),
+      page: z.coerce.number().int().min(1).default(1), pageSize: z.coerce.number().int().min(1).max(100).default(20),
+    }));
     await owned(wsId(req), p.id);
+    // Whether this contact has an event of the given type in this sequence.
+    const hasEvent = (type: string) => sql`exists (select 1 from events e where e.sequence_id = ${sequenceContacts.sequenceId} and e.contact_id = ${sequenceContacts.contactId} and e.type = ${type})`;
+    const eventCount = (type: string) => sql<number>`(select count(*)::int from events e where e.sequence_id = ${sequenceContacts.sequenceId} and e.contact_id = ${sequenceContacts.contactId} and e.type = ${type})`;
+    const term = q.q?.trim();
     const where = and(
       eq(sequenceContacts.sequenceId, p.id),
       q.state ? eq(sequenceContacts.state, q.state as "active") : undefined,
-      q.q ? ilike(contacts.email, `%${q.q}%`) : undefined,
+      q.mailboxId ? eq(sequenceContacts.assignedMailboxId, q.mailboxId) : undefined,
+      term ? or(ilike(contacts.email, `%${term}%`), ilike(contacts.firstName, `%${term}%`), ilike(contacts.lastName, `%${term}%`), ilike(contacts.companyName, `%${term}%`)) : undefined,
+      q.engagement === "not_opened" ? sql`not ${hasEvent("opened")}` : q.engagement ? hasEvent(q.engagement) : undefined,
     );
     const [rows, [count]] = await Promise.all([
       db.select({
         id: sequenceContacts.id, state: sequenceContacts.state, currentStep: sequenceContacts.currentStep, nextStep: sequenceContacts.nextStep,
         nextRunAt: sequenceContacts.nextRunAt, lastError: sequenceContacts.lastError, mailboxId: sequenceContacts.assignedMailboxId,
+        sent: eventCount("sent"), opened: eventCount("opened"), clicked: eventCount("clicked"), replied: eventCount("replied"),
         contact: { id: contacts.id, email: contacts.email, firstName: contacts.firstName, lastName: contacts.lastName, companyName: contacts.companyName },
       }).from(sequenceContacts).innerJoin(contacts, eq(contacts.id, sequenceContacts.contactId)).where(where)
         .orderBy(desc(sequenceContacts.createdAt)).limit(q.pageSize).offset((q.page - 1) * q.pageSize),
@@ -402,9 +420,32 @@ export async function sequenceRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  // Out-of-office contacts are waiting for a return date; this sends to them now instead.
+  app.post("/v1/workspaces/:ws/sequences/:id/contacts/resume-ooo", async (req) => {
+    const p = params(req, idParams);
+    const b = body(req, z.object({ ids: z.array(z.string().uuid()).optional() }));
+    await owned(wsId(req), p.id);
+    const rows = await db.update(sequenceContacts).set({ state: "active", nextRunAt: new Date(), lastError: null })
+      .where(and(eq(sequenceContacts.sequenceId, p.id), eq(sequenceContacts.state, "ooo"), b.ids?.length ? inArray(sequenceContacts.id, b.ids) : undefined))
+      .returning({ id: sequenceContacts.id });
+    return { resumed: rows.length };
+  });
+
+  // "Interrupted" contacts stopped with an error (a missing step, an empty variant, an invalid schedule). Retry puts them back in line.
+  app.post("/v1/workspaces/:ws/sequences/:id/contacts/retry-interrupted", async (req) => {
+    const p = params(req, idParams);
+    const b = body(req, z.object({ ids: z.array(z.string().uuid()).optional() }));
+    await owned(wsId(req), p.id);
+    const rows = await db.update(sequenceContacts)
+      .set({ state: "active", nextStep: sql`coalesce(${sequenceContacts.nextStep}, ${sequenceContacts.currentStep} + 1)`, nextRunAt: new Date(), lastError: null })
+      .where(and(eq(sequenceContacts.sequenceId, p.id), eq(sequenceContacts.state, "error"), b.ids?.length ? inArray(sequenceContacts.id, b.ids) : undefined))
+      .returning({ id: sequenceContacts.id });
+    return { retried: rows.length };
+  });
+
   // Renders a step for one contact (or sample data) and scores it, for the editor's Preview tab.
   app.post("/v1/workspaces/:ws/preview", async (req) => {
-    const b = body(req, z.object({ subject: z.string().default(""), bodyHtml: z.string().default(""), contactId: z.string().uuid().optional() }));
+    const b = body(req, z.object({ subject: z.string().default(""), bodyHtml: z.string().default(""), replySubject: z.string().max(500).optional(), contactId: z.string().uuid().optional() }));
     const workspaceId = wsId(req);
     const contact = b.contactId
       ? await db.query.contacts.findFirst({ where: and(eq(contacts.id, b.contactId), eq(contacts.workspaceId, workspaceId)) })
@@ -415,9 +456,23 @@ export async function sequenceRoutes(app: FastifyInstance) {
       ? contactVariables(contact, sender)
       : { first_name: "Jordan", last_name: "Lee", company: "Acme Inc", company_name: "Acme Inc", title: "Head of Sales", sender_name: sender.fromName, sender_first_name: sender.fromName.split(" ")[0] };
     const seed = `${contact?.id ?? "sample"}:${Date.now()}`;
+    // An empty subject on a follow-up replies in the thread, so it shows as "Re: <subject of the email above>".
     const subject = render(b.subject, vars, { seed: `${seed}:s` });
-    const html = render(b.bodyHtml, vars, { seed, html: true });
-    return { subject, html, contact: contact ? { id: contact.id, email: contact.email } : null, spam: spamCheck(subject, html) };
+    const replySubject = b.replySubject === undefined ? undefined : render(b.replySubject, vars, { seed: `${seed}:r` });
+    const bodyHtml = render(b.bodyHtml, vars, { seed, html: true });
+    // Preview what is actually sent: body + mailbox signature + opt-out line.
+    const settings = DEFAULT_SEQUENCE_SETTINGS;
+    const html = bodyHtml.trim() ? composeEmail({
+      from: { name: sender.fromName, address: sender.email },
+      to: contact?.email ?? "sample@example.com",
+      subject,
+      bodyHtml,
+      signatureHtml: mailbox ? renderSignature(mailbox, `${seed}:sig`) : undefined,
+      plainText: false,
+      keepDataImages: true,
+      optOut: settings.optOut.enabled ? { url: "#", text: settings.optOut.text } : null,
+    }).html : "";
+    return { subject, replySubject, html, contact: contact ? { id: contact.id, email: contact.email } : null, spam: spamCheck(subject, html) };
   });
 
   app.post("/v1/workspaces/:ws/spam-check", async (req) => {

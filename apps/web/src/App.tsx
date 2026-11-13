@@ -7,6 +7,8 @@ import { ContactsPage } from "./pages/Contacts";
 import { MailboxesPage } from "./pages/Mailboxes";
 import { PrimeboxPage } from "./pages/Primebox";
 import { SequenceBuilder } from "./pages/SequenceBuilder";
+import { ComposePage } from "./pages/Compose";
+import { EmailsPage } from "./pages/Emails";
 import { SequencesPage } from "./pages/Sequences";
 import { SettingsPage } from "./pages/Settings";
 import { Shell } from "./Shell";
@@ -50,6 +52,8 @@ function Protected() {
     <Shell me={me.data} workspace={workspace}>
       <Routes>
         <Route path="inbox/*" element={<PrimeboxPage />} />
+        <Route path="emails" element={<EmailsPage />} />
+        <Route path="emails/compose" element={<ComposePage />} />
         <Route path="sequences" element={<SequencesPage />} />
         <Route path="sequences/:id/*" element={<SequenceBuilder />} />
         <Route path="analytics" element={<AnalyticsPage />} />

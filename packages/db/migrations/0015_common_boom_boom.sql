@@ -1,0 +1,1 @@
+ALTER TABLE "step_variants" ADD COLUMN "attachments" jsonb DEFAULT '[]'::jsonb NOT NULL;

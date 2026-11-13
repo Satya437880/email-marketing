@@ -120,6 +120,7 @@ export async function executeSend(job: SendJob, opts: { trackingBaseUrl: string;
     to: contact.email,
     subject,
     bodyHtml,
+    attachments: variant.attachments,
     signatureHtml: renderSignature(mailbox, `${seed}:sig`),
     plainText: settings.plainText,
     optOut: settings.optOut.enabled ? { url: `${base}/u/${token}`, text: settings.optOut.text } : null,
@@ -151,7 +152,7 @@ export async function executeSend(job: SendJob, opts: { trackingBaseUrl: string;
     throw err;
   }
 
-  const next = nextEmailStep(steps.map((s) => ({ id: s.id, type: s.type, delayDays: s.delayDays })), job.stepIndex, now);
+  const next = nextEmailStep(steps.map((s) => ({ id: s.id, type: s.type, delayDays: s.delayDays, delayMinutes: s.delayMinutes })), job.stepIndex, now);
   await db.transaction(async (tx) => {
     if (!continueThread || !thread) {
       [thread] = await tx.insert(threads).values({

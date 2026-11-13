@@ -4,7 +4,7 @@ import { and, asc, eq, inArray, sql } from "drizzle-orm";
 
 async function firstEmailIndex(sequenceId: string) {
   const steps = await db.select().from(sequenceSteps).where(eq(sequenceSteps.sequenceId, sequenceId)).orderBy(asc(sequenceSteps.position));
-  return { steps, first: nextEmailStep(steps.map((s) => ({ id: s.id, type: s.type, delayDays: s.delayDays })), -1, new Date()) };
+  return { steps, first: nextEmailStep(steps.map((s) => ({ id: s.id, type: s.type, delayDays: s.delayDays, delayMinutes: s.delayMinutes })), -1, new Date()) };
 }
 
 export async function addContactsToSequence(workspaceId: string, sequenceId: string, contactIds: string[]): Promise<number> {
@@ -52,7 +52,8 @@ export async function launchSequence(workspaceId: string, sequenceId: string): P
 
   await db.transaction(async (tx) => {
     await tx.update(sequences).set({ status: "active", launchedAt: seq.launchedAt ?? new Date() }).where(eq(sequences.id, sequenceId));
-    await tx.update(sequenceContacts).set({ state: "active", nextStep: first.index, nextRunAt: new Date() })
+    // The first email's "start after" wait counts from launch.
+    await tx.update(sequenceContacts).set({ state: "active", nextStep: first.index, nextRunAt: first.dueAt })
       .where(and(eq(sequenceContacts.sequenceId, sequenceId), eq(sequenceContacts.state, "queued")));
   });
 }

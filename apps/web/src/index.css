@@ -52,3 +52,6 @@
   .prose-mail blockquote { @apply border-l-2 border-ink-200 pl-3 text-ink-500; }
   .prose-mail a { @apply text-brand-700 underline; }
 }
+
+/* Editor toolbar: icon-only dropdowns when the editor is narrow. */
+[data-compact="true"] .dd-label { display: none; }

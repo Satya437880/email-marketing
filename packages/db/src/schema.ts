@@ -280,7 +280,12 @@ export const sequenceSteps = pgTable("sequence_steps", {
   type: stepTypeEnum("type").notNull(),
   name: text("name").notNull().default(""),
   delayDays: integer("delay_days").notNull().default(0),
+  // Waits shorter than a day (or not a whole number of days). The wait before a step is delay_days + delay_minutes.
+  delayMinutes: integer("delay_minutes").notNull().default(0),
 },(t) => [index("sequence_steps_seq").on(t.sequenceId, t.position)]);
+
+// A file attached to an email step. Content is stored base64-encoded.
+export interface StepAttachment { name: string; type: string; size: number; data: string }
 
 export const stepVariants = pgTable("step_variants", {
   id: id(),
@@ -289,6 +294,7 @@ export const stepVariants = pgTable("step_variants", {
   subject: text("subject").notNull().default(""),
   bodyHtml: text("body_html").notNull().default(""),
   weight: integer("weight").notNull().default(1),
+  attachments: jsonb("attachments").$type<StepAttachment[]>().notNull().default([]),
 });
 
 export const sequenceSenders = pgTable("sequence_senders", {

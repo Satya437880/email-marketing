@@ -1,0 +1,1 @@
+ALTER TABLE "sequence_steps" ADD COLUMN "delay_minutes" integer DEFAULT 0 NOT NULL;

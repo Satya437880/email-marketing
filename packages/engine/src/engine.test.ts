@@ -111,6 +111,13 @@ describe("variants and steps", () => {
     expect(nextEmailStep(steps, 1, now)).toEqual({ index: 4, dueAt: new Date(now.getTime() + 3 * 86400000) });
     expect(nextEmailStep(steps, 4, now)).toBeNull();
   });
+
+  it("starts the first email after a wait given in minutes, and adds minutes to days", () => {
+    const tenMinutes = [{ id: "d0", type: "delay" as const, delayDays: 0, delayMinutes: 10 }, { id: "e1", type: "email" as const, delayDays: 0 }];
+    expect(nextEmailStep(tenMinutes, -1, now)).toEqual({ index: 1, dueAt: new Date(now.getTime() + 10 * 60000) });
+    const mixed = [{ id: "d0", type: "delay" as const, delayDays: 1, delayMinutes: 90 }, { id: "e1", type: "email" as const, delayDays: 0 }];
+    expect(nextEmailStep(mixed, -1, now)).toEqual({ index: 1, dueAt: new Date(now.getTime() + 86400000 + 90 * 60000) });
+  });
 });
 
 describe("evaluate", () => {

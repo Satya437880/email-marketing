@@ -48,6 +48,7 @@ export async function sendSmtp(server: ServerConfig, auth: MailboxAuth, email: O
       inReplyTo: email.inReplyTo,
       references: email.references,
       headers: email.headers,
+      attachments: email.attachments,
     });
     return {
       messageId: email.messageId,

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  ArrowLeft, Building2, CalendarClock, ChevronRight, Clock, DollarSign, Eye, FileText, Forward, Link2, LogOut, Mail, MailOpen, MessageSquareReply,
+  ArrowLeft, Building2, CalendarClock, ChevronRight, Clock, DollarSign, Eye, FileText, Filter as Funnel, Forward, HelpCircle, Link2, LogOut, Mail, MailOpen, MessageSquareReply,
   MousePointerClick, Plus, Rocket, Save, Search, Send, Server, ShieldCheck, SlidersHorizontal, Trash2, Type, UserCheck, UserPlus, Users, X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -45,7 +45,7 @@ function SequenceEditor() {
   const saveSteps = useMutation({
     mutationFn: () => api(`/v1/workspaces/${ws}/sequences/${id}/steps`, {
       method: "PUT",
-      body: { steps: steps.map((s) => ({ id: s.id, type: s.type, name: s.name, delayDays: s.delayDays, variants: s.variants.map((v) => ({ id: v.id, label: v.label, subject: v.subject, bodyHtml: v.bodyHtml, weight: v.weight })) })) },
+      body: { steps: steps.map((s) => ({ id: s.id, type: s.type, name: s.name, delayDays: s.delayDays, delayMinutes: s.delayMinutes, variants: s.variants.map((v) => ({ id: v.id, label: v.label, subject: v.subject, bodyHtml: v.bodyHtml, weight: v.weight })) })) },
     }),
     onSuccess: () => { setDirty(false); toast("Sequence saved"); refresh(); },
     onError: (e: Error) => toast(e.message, "error"),
@@ -77,13 +77,13 @@ function SequenceEditor() {
         <Stepper step={step} onStep={setStep} />
       </div>
 
-      <div className="flex-1 p-4 md:p-8 w-full max-w-6xl">
+      <div className={cx("flex-1 p-4 md:p-8 w-full", step === 2 ? "max-w-[1800px]" : "max-w-6xl")}>
         {step === 0 && <NameServiceStep sequence={s} onSaved={refresh} />}
         {step === 1 && <>
           <StepHeader title="Contacts" help="Who receives this sequence." text={`${s.contactCount.toLocaleString()} contact${s.contactCount === 1 ? "" : "s"} in this sequence`} />
           <div className="mt-6"><ContactsTab sequenceId={s.id} onChange={refresh} /></div>
         </>}
-        {step === 2 && <StepHeader title="Step Builder" help="Add emails and the waits between them. Add variants to A/B test." text="Build your sequence by adding steps and customizing them"
+        {step === 2 && <StepHeader title="Sequence steps" help="Add emails and the waits between them. Add variants to A/B test." text="Draft your sequence by adding steps and customizing them"
           actions={dirty ? <button className="btn-primary h-10" onClick={() => saveSteps.mutate()} disabled={saveSteps.isPending}>Update sequence</button> : undefined} />}
         {step === 2 && <div className="mt-6"><StepBuilder steps={steps} onChange={(next) => { setSteps(next); setDirty(true); }} /></div>}
 
@@ -112,50 +112,162 @@ export function ContactsTab({ sequenceId, onChange }: { sequenceId: string; onCh
   const qc = useQueryClient();
   const toast = useToast();
   const [page, setPage] = useState(1);
+  const [search, setSearch] = useState("");
+  const [term, setTerm] = useState("");
   const [state, setState] = useState("");
+  const [engagement, setEngagement] = useState("");
+  const [mailboxId, setMailboxId] = useState("");
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
+
+  // Wait for a pause in typing before searching.
+  useEffect(() => {
+    const t = setTimeout(() => { setTerm(search.trim()); setPage(1); }, 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  type Row = { id: string; state: string; currentStep: number; nextRunAt: string | null; lastError: string | null; sent: number; opened: number; clicked: number; replied: number; contact: { email: string; firstName: string; lastName: string; companyName: string } };
+  const mailboxes = useQuery({ queryKey: ["mailboxes", ws], queryFn: () => api<Mailbox[]>(`/v1/workspaces/${ws}/mailboxes`) });
+  const params = new URLSearchParams({ page: String(page) });
+  if (term) params.set("q", term);
+  if (state) params.set("state", state);
+  if (engagement) params.set("engagement", engagement);
+  if (mailboxId) params.set("mailboxId", mailboxId);
   const list = useQuery({
-    queryKey: ["seq-contacts", ws, sequenceId, page, state],
-    queryFn: () => api<Paged<{ id: string; state: string; currentStep: number; nextRunAt: string | null; lastError: string | null; contact: { email: string; firstName: string; lastName: string; companyName: string } }>>(
-      `/v1/workspaces/${ws}/sequences/${sequenceId}/contacts?page=${page}${state ? `&state=${state}` : ""}`),
+    queryKey: ["seq-contacts", ws, sequenceId, params.toString()],
+    queryFn: () => api<Paged<Row>>(`/v1/workspaces/${ws}/sequences/${sequenceId}/contacts?${params}`),
   });
-  const onAdded = (r: { added: number; alreadyIn: number }) => {
-    toast([`Added ${r.added} contact${r.added === 1 ? "" : "s"}`, r.alreadyIn ? `${r.alreadyIn} already in this sequence` : ""].filter(Boolean).join(" · "));
-    setAdding(false);
+  const rows = list.data?.items ?? [];
+  const activeFilters = [state, engagement, mailboxId].filter(Boolean).length;
+  const allPicked = rows.length > 0 && rows.every((r) => selected.has(r.id));
+  const refresh = () => {
+    setSelected(new Set());
     qc.invalidateQueries({ queryKey: ["seq-contacts", ws, sequenceId] });
     qc.invalidateQueries({ queryKey: ["sequences", ws] });
     onChange();
   };
+  const onAdded = (r: { added: number; alreadyIn: number }) => {
+    toast([`Added ${r.added} contact${r.added === 1 ? "" : "s"}`, r.alreadyIn ? `${r.alreadyIn} already in this sequence` : ""].filter(Boolean).join(" · "));
+    setAdding(false);
+    refresh();
+  };
+  const base = `/v1/workspaces/${ws}/sequences/${sequenceId}/contacts`;
+  const resumeOoo = useMutation({
+    mutationFn: (ids?: string[]) => api<{ resumed: number }>(`${base}/resume-ooo`, { body: { ids } }),
+    onSuccess: (r) => { toast(r.resumed ? `Resumed ${r.resumed} out-of-office contact${r.resumed === 1 ? "" : "s"}` : "No out-of-office contacts to resume"); refresh(); },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+  const retry = useMutation({
+    mutationFn: (ids?: string[]) => api<{ retried: number }>(`${base}/retry-interrupted`, { body: { ids } }),
+    onSuccess: (r) => { toast(r.retried ? `Retrying ${r.retried} interrupted contact${r.retried === 1 ? "" : "s"}` : "No interrupted contacts to retry"); refresh(); },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+  const remove = useMutation({
+    mutationFn: (ids: string[]) => api(`${base}/remove`, { body: { ids } }),
+    onSuccess: () => { toast("Removed from this sequence"); refresh(); },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+  const togglePage = () => setSelected(allPicked ? new Set() : new Set(rows.map((r) => r.id)));
+  const toggleOne = (id: string) => setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const num = (n: number) => (n > 0 ? n : <span className="text-ink-300">—</span>);
 
   return (
-    <div className="card overflow-hidden">
-      <div className="flex flex-wrap items-center gap-3 p-4 border-b border-ink-100">
-        <select className="input w-auto" value={state} onChange={(e) => { setState(e.target.value); setPage(1); }}>
-          <option value="">All statuses</option>
-          {["queued", "active", "replied", "ooo", "bounced", "opted_out", "finished", "error"].map((s) => <option key={s} value={s}>{s.replace("_", " ")}</option>)}
-        </select>
-        <button className="btn-primary ml-auto" onClick={() => setAdding(true)}><Plus size={15} /> Add contacts</button>
+    <div className="card">
+      <div className="flex flex-wrap lg:flex-nowrap items-center gap-3 p-4">
+        <div className="relative w-full sm:w-auto sm:flex-1 sm:min-w-[9rem] sm:max-w-[22rem]">
+          <Search size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-ink-500" />
+          <input className="input !h-11 !rounded-xl !pl-11 !text-[15px]" placeholder="Search" value={search} onChange={(e) => setSearch(e.target.value)} />
+        </div>
+        <div className="relative">
+          <button className={cx("btn-secondary !h-11 !rounded-xl !px-5 !text-[15px] !font-semibold", activeFilters > 0 && "border-brand-500 text-brand-700")} onClick={() => setFilterOpen((o) => !o)}>
+            <Funnel size={18} /> Filter{activeFilters > 0 && <span className="chip bg-brand-600 text-white ml-1">{activeFilters}</span>}
+          </button>
+          {filterOpen && (
+            <div className="absolute z-30 left-0 mt-2 w-72 card p-4 space-y-3 shadow-lg">
+              <div>
+                <label className="label">Status</label>
+                <select className="input" value={state} onChange={(e) => { setState(e.target.value); setPage(1); }}>
+                  <option value="">All statuses</option>
+                  {["queued", "active", "sending", "replied", "ooo", "bounced", "opted_out", "finished", "error"].map((s) => <option key={s} value={s}>{s === "ooo" ? "Out of office" : s === "error" ? "Interrupted" : s.replace("_", " ")}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="label">Engagement</label>
+                <select className="input" value={engagement} onChange={(e) => { setEngagement(e.target.value); setPage(1); }}>
+                  <option value="">Any</option>
+                  <option value="opened">Opened</option>
+                  <option value="not_opened">Not opened</option>
+                  <option value="clicked">Clicked</option>
+                  <option value="replied">Replied</option>
+                </select>
+              </div>
+              <div>
+                <label className="label">Mailbox</label>
+                <select className="input" value={mailboxId} onChange={(e) => { setMailboxId(e.target.value); setPage(1); }}>
+                  <option value="">All mailboxes</option>
+                  {mailboxes.data?.map((m) => <option key={m.id} value={m.id}>{m.email}</option>)}
+                </select>
+              </div>
+              <div className="flex items-center justify-between pt-1">
+                <button className="btn-ghost btn-sm" disabled={!activeFilters} onClick={() => { setState(""); setEngagement(""); setMailboxId(""); setPage(1); }}>Clear all</button>
+                <button className="btn-primary btn-sm" onClick={() => setFilterOpen(false)}>Done</button>
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="flex flex-wrap lg:flex-nowrap items-center gap-2 ml-auto [&>button]:whitespace-nowrap [&>button]:shrink-0">
+          <button className="btn-secondary !h-11 !rounded-xl !px-5 !text-[15px] !font-semibold" disabled={resumeOoo.isPending} onClick={() => resumeOoo.mutate(selected.size ? [...selected] : undefined)}>Resume all OOOs</button>
+          <button className="btn-secondary !h-11 !rounded-xl !px-5 !text-[15px] !font-semibold" disabled={retry.isPending} onClick={() => retry.mutate(selected.size ? [...selected] : undefined)}>Retry interrupted contacts</button>
+          <button className="btn-secondary !h-11 !rounded-xl !px-5 !text-[15px] !font-semibold" disabled={!rows.length} onClick={togglePage}>{allPicked ? "Deselect all" : "Select all"}</button>
+          {selected.size > 0 && <button className="btn-secondary !h-11 !rounded-xl !px-5 !text-[15px] !font-semibold text-red-700" disabled={remove.isPending} onClick={() => remove.mutate([...selected])}>Remove ({selected.size})</button>}
+          <button className="btn-primary !h-11 !rounded-xl !px-5 !text-[15px] !font-semibold" onClick={() => setAdding(true)}>Add contacts</button>
+        </div>
       </div>
-      {list.isLoading ? <Spinner /> : !list.data?.items.length ? (
-        <Empty icon={<Users size={20} />} title="No contacts in this sequence" text="Add contacts by tag. Import them on the Contacts page first." action={<button className="btn-primary" onClick={() => setAdding(true)}>Add contacts</button>} />
+      {list.isLoading ? <Spinner /> : !rows.length ? (
+        term || activeFilters
+          ? <Empty icon={<Search size={20} />} title="No contacts match" text="Try a different search or clear the filters." action={<button className="btn-secondary" onClick={() => { setSearch(""); setState(""); setEngagement(""); setMailboxId(""); }}>Clear search and filters</button>} />
+          : <Empty icon={<Users size={20} />} title="No contacts in this sequence" text="Add contacts by tag. Import them on the Contacts page first." action={<button className="btn-primary" onClick={() => setAdding(true)}>Add contacts</button>} />
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full">
-            <thead><tr><th className="th">Contact</th><th className="th">Company</th><th className="th">Status</th><th className="th">Emails sent</th><th className="th">Next send</th><th className="th">Note</th></tr></thead>
+            <thead>
+              <tr>
+                <th className="th !py-3.5 !text-sm !font-medium !text-ink-700 border-r"><span className="inline-flex items-center gap-3"><input type="checkbox" className="w-5 h-5 rounded-md border-ink-300" aria-label="Select all on this page" checked={allPicked} onChange={togglePage} />Contact</span></th>
+                <th className="th !py-3.5 !text-sm !font-medium !text-ink-700 border-r"><span className="inline-flex items-center gap-1.5">Status <span title="Active: sending on schedule. Out of office: waiting for a return date. Interrupted: stopped by an error, use Retry. Replied, bounced and opted out are finished." className="text-ink-500 cursor-help"><HelpCircle size={17} /></span></span></th>
+                <th className="th !py-3.5 !text-sm !font-medium !text-ink-700 !text-center">Scheduled</th>
+                <th className="th !py-3.5 !text-sm !font-medium !text-ink-700 !text-center">Sent</th>
+                <th className="th !py-3.5 !text-sm !font-medium !text-ink-700 !text-center">Opened</th>
+                <th className="th !py-3.5 !text-sm !font-medium !text-ink-700 !text-center">Clicked</th>
+                <th className="th !py-3.5 !text-sm !font-medium !text-ink-700 !text-center border-r">Replied</th>
+                <th className="th !py-3.5 !text-sm !font-medium !text-ink-700 !text-center">Action</th>
+              </tr>
+            </thead>
             <tbody>
-              {list.data.items.map((r) => (
-                <tr key={r.id}>
-                  <td className="td"><div className="font-medium text-ink-800">{`${r.contact.firstName} ${r.contact.lastName}`.trim() || "—"}</div><div className="text-xs text-ink-500">{r.contact.email}</div></td>
-                  <td className="td">{r.contact.companyName || "—"}</td>
-                  <td className="td"><StatusPill status={r.state} /></td>
-                  <td className="td">{r.currentStep < 0 ? 0 : "✓ through step " + (r.currentStep + 1)}</td>
-                  <td className="td text-ink-500">{fmtDate(r.nextRunAt, true)}</td>
-                  <td className="td text-xs text-ink-400">{r.lastError?.replace(/_/g, " ") ?? ""}</td>
+              {rows.map((r) => (
+                <tr key={r.id} className={selected.has(r.id) ? "bg-brand-50/50" : undefined}>
+                  <td className="td border-r">
+                    <div className="flex items-center gap-3">
+                      <input type="checkbox" className="w-5 h-5 rounded-md border-ink-300 shrink-0" aria-label={`Select ${r.contact.email}`} checked={selected.has(r.id)} onChange={() => toggleOne(r.id)} />
+                      <div><div className="font-medium text-ink-800">{`${r.contact.firstName} ${r.contact.lastName}`.trim() || "—"}</div><div className="text-xs text-ink-500">{r.contact.email}{r.contact.companyName ? ` · ${r.contact.companyName}` : ""}</div></div>
+                    </div>
+                  </td>
+                  <td className="td border-r"><StatusPill status={r.state === "error" ? "interrupted" : r.state} />{r.lastError && <div className="text-xs text-ink-400 mt-0.5">{r.lastError.replace(/_/g, " ")}</div>}</td>
+                  <td className="td text-center text-ink-500 whitespace-nowrap">{fmtDate(r.nextRunAt, true)}</td>
+                  <td className="td text-center">{num(r.sent)}</td>
+                  <td className="td text-center">{num(r.opened)}</td>
+                  <td className="td text-center">{num(r.clicked)}</td>
+                  <td className="td text-center border-r">{num(r.replied)}</td>
+                  <td className="td text-center whitespace-nowrap">
+                    {r.state === "ooo" && <button className="btn-ghost btn-sm" onClick={() => resumeOoo.mutate([r.id])}>Resume</button>}
+                    {r.state === "error" && <button className="btn-ghost btn-sm" onClick={() => retry.mutate([r.id])}>Retry</button>}
+                    {["queued", "active", "sending", "ooo"].includes(r.state) && <button className="btn-ghost btn-sm text-red-700" onClick={() => remove.mutate([r.id])} title="Remove from this sequence"><Trash2 size={14} /></button>}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
-          <Pager page={page} pageSize={20} total={list.data.total} onPage={setPage} />
+          <Pager page={page} pageSize={20} total={list.data?.total ?? 0} onPage={setPage} />
         </div>
       )}
       {adding && <AddContactsModal sequenceId={sequenceId} onClose={() => setAdding(false)} onAdded={onAdded} />}
