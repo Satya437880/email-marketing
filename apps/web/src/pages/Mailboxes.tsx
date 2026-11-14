@@ -144,8 +144,8 @@ function EditMailboxModal({ mailbox, onClose, onSaved }: { mailbox: Mailbox; onC
   const [tab, setTab] = useState<"settings" | "provider" | "signature" | "tags">("settings");
   const [first0, ...rest0] = mailbox.fromName.trim().split(/\s+/);
   const [f, setF] = useState({
-    firstName: first0 ?? "", lastName: rest0.join(" "), dailyLimit: mailbox.dailyLimit, minGapSeconds: mailbox.minGapSeconds, maxGapSeconds: mailbox.maxGapSeconds,
-    timezone: mailbox.timezone, signatureHtml: mailbox.signatureHtml.replace(/^<!--sig:[^>]*-->/, ""), tags: mailbox.tags,
+    firstName: first0 ?? "", lastName: rest0.join(" "), dailyLimit: mailbox.dailyLimit, minGapSeconds: Math.round((mailbox.minGapSeconds + mailbox.maxGapSeconds) / 2), maxGapSeconds: Math.round((mailbox.minGapSeconds + mailbox.maxGapSeconds) / 2),
+    signatureHtml: mailbox.signatureHtml.replace(/^<!--sig:[^>]*-->/, ""), tags: mailbox.tags,
     trackingOn: !!mailbox.trackingDomain, trackingDomain: mailbox.trackingDomain ?? "",
   });
   const [applyAll, setApplyAll] = useState(false);
@@ -188,8 +188,8 @@ function EditMailboxModal({ mailbox, onClose, onSaved }: { mailbox: Mailbox; onC
       await api(`/v1/workspaces/${ws}/mailboxes/${mailbox.id}`, {
         method: "PATCH",
         body: {
-          fromName: `${f.firstName} ${f.lastName}`.trim() || mailbox.fromName, dailyLimit: f.dailyLimit, minGapSeconds: f.minGapSeconds, maxGapSeconds: f.maxGapSeconds,
-          timezone: f.timezone, signatureHtml: f.signatureHtml, tags: f.tags, trackingDomain: f.trackingOn && domain ? domain : null,
+          fromName: `${f.firstName} ${f.lastName}`.trim() || mailbox.fromName, dailyLimit: f.dailyLimit, minGapSeconds: f.minGapSeconds, maxGapSeconds: f.minGapSeconds,
+          signatureHtml: f.signatureHtml, tags: f.tags, trackingDomain: f.trackingOn && domain ? domain : null,
         },
       });
       if (!applyAll) return 0;
@@ -225,12 +225,11 @@ function EditMailboxModal({ mailbox, onClose, onSaved }: { mailbox: Mailbox; onC
             </div>
             <div>
               <label className="label flex items-center gap-1.5">Daily (24 Hour) sending limit <span title="Cold emails this mailbox sends per day. Start at 20–30 for new mailboxes; most teams stay at or below 50." className="text-ink-400 cursor-help"><HelpCircle size={14} /></span></label>
-              <input type="number" min={1} max={500} className="input h-10" value={f.dailyLimit} onChange={(e) => setF({ ...f, dailyLimit: Number(e.target.value) })} />
+              <input type="number" min={1} max={500} className="input h-10" value={f.dailyLimit || ""} onChange={(e) => setF({ ...f, dailyLimit: Number(e.target.value.replace(/\D/g, "")) })} />
             </div>
-            <div className="grid grid-cols-3 gap-3">
-              <div><label className="label">Min gap (sec)</label><input type="number" className="input" value={f.minGapSeconds} onChange={(e) => setF({ ...f, minGapSeconds: Number(e.target.value) })} /></div>
-              <div><label className="label">Max gap (sec)</label><input type="number" className="input" value={f.maxGapSeconds} onChange={(e) => setF({ ...f, maxGapSeconds: Number(e.target.value) })} /></div>
-              <div><label className="label">Time zone</label><input className="input" value={f.timezone} onChange={(e) => setF({ ...f, timezone: e.target.value })} /></div>
+            <div>
+              <label className="label flex items-center gap-1.5">Delay between emails (seconds) <span title="How long this mailbox waits after one email before it sends the next." className="text-ink-400 cursor-help"><HelpCircle size={14} /></span></label>
+              <input type="number" min={30} max={3600} className="input h-10" value={f.minGapSeconds || ""} onChange={(e) => { const n = Number(e.target.value.replace(/\D/g, "")); setF({ ...f, minGapSeconds: n, maxGapSeconds: n }); }} />
             </div>
             <div className="border-t border-ink-100 pt-4 space-y-3">
               <div className="flex items-start gap-4">
@@ -346,7 +345,7 @@ type OAuthKind = "google" | "microsoft";
 // One click: a full-page navigation to our start endpoint, which redirects straight to the provider's official login page.
 // After the user approves, the provider sends them back and the mailbox is connected (see the callback in the API).
 function connectWithProvider(ws: string, provider: OAuthKind, hintEmail?: string) {
-  const params = new URLSearchParams({ timezone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+  const params = new URLSearchParams();
   if (hintEmail) params.set("hint", hintEmail);
   window.location.assign(`/v1/workspaces/${ws}/mailboxes/oauth/${provider}/start?${params}`);
 }
@@ -373,12 +372,12 @@ function AddMailboxModal({ onClose }: { onClose: () => void }) {
   const toast = useToast();
   const [provider, setProvider] = useState<Provider | null>(null);
   const [f, setF] = useState({
-    email: "", fromName: "", username: "", password: "", dailyLimit: 30, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    email: "", fromName: "", username: "", password: "", dailyLimit: 30,
     smtpHost: "", smtpPort: 465, smtpSecure: true, imapHost: "", imapPort: 993, imapSecure: true,
   });
   const [test, setTest] = useState<{ smtp: { ok: boolean; error?: string }; imap: { ok: boolean; error?: string } } | null>(null);
   const payload = () => ({
-    email: f.email, fromName: f.fromName, provider, username: f.username || undefined, password: f.password, dailyLimit: f.dailyLimit, timezone: f.timezone,
+    email: f.email, fromName: f.fromName, provider, username: f.username || undefined, password: f.password, dailyLimit: f.dailyLimit,
     ...(provider === "smtp" ? { smtp: { host: f.smtpHost, port: f.smtpPort, secure: f.smtpSecure }, imap: { host: f.imapHost, port: f.imapPort, secure: f.imapSecure } } : {}),
   });
   const runTest = useMutation({ mutationFn: () => api<typeof test>(`/v1/workspaces/${ws}/mailboxes/test`, { body: payload() }), onSuccess: setTest });
@@ -397,7 +396,7 @@ function AddMailboxModal({ onClose }: { onClose: () => void }) {
   const [bulkResult, setBulkResult] = useState<{ connected: number; failed: number; results: { row: number; email: string; ok: boolean; error?: string }[] } | null>(null);
   const bulk = useMutation({
     mutationFn: async (file: File) => api<NonNullable<typeof bulkResult>>(`/v1/workspaces/${ws}/mailboxes/bulk`, {
-      body: { csv: await file.text(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone },
+      body: { csv: await file.text() },
     }),
     onSuccess: (r) => { setBulkResult(r); qc.invalidateQueries({ queryKey: ["mailboxes", ws] }); },
     onError: (e: Error) => toast(e.message, "error"),
@@ -460,7 +459,6 @@ function AddMailboxModal({ onClose }: { onClose: () => void }) {
             <div><label className="label">Username <span className="text-ink-400 font-normal">(if not the email)</span></label><input className="input" value={f.username} onChange={set("username")} /></div>
             <div><label className="label">{provider === "google" ? "App password" : "Password"}</label><input className="input" type="password" value={f.password} onChange={set("password")} /></div>
             <div><label className="label">Daily cold limit</label><input className="input" type="number" value={f.dailyLimit} onChange={set("dailyLimit")} /></div>
-            <div><label className="label">Time zone</label><input className="input" value={f.timezone} onChange={set("timezone")} /></div>
           </div>
           {provider === "smtp" && (
             <div className="grid sm:grid-cols-2 gap-4">

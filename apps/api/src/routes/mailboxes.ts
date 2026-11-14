@@ -24,7 +24,7 @@ const createSchema = z.object({
   smtp: serverSchema.optional(),
   imap: serverSchema.optional(),
   dailyLimit: z.coerce.number().int().min(1).max(500).default(50),
-  timezone: z.string().default("UTC"),
+  timezone: z.string().optional(),
 });
 
 const updateSchema = z.object({
@@ -110,7 +110,7 @@ export async function mailboxRoutes(app: FastifyInstance) {
     }
     const q = req.query as { timezone?: string; hint?: string };
     const hint = q.hint && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(q.hint) ? q.hint : undefined;
-    const state = signState({ purpose: "mailbox", ws: wsSlug, userId: req.user!.id, provider, timezone: q.timezone || "UTC" });
+    const state = signState({ purpose: "mailbox", ws: wsSlug, userId: req.user!.id, provider, timezone: req.workspace?.timezone || "UTC" });
     return reply.redirect(authorizationUrl(provider, state, creds, hint), 302);
   });
 
@@ -198,7 +198,7 @@ export async function mailboxRoutes(app: FastifyInstance) {
     const domain = await ensureDomain(wsId(req), b.email);
     const [row] = await db.insert(mailboxes).values({
       workspaceId: wsId(req), domainId: domain.id, email: b.email, fromName: b.fromName, provider: b.provider,
-      credentials: sealCredentials(c), dailyLimit: b.dailyLimit, timezone: b.timezone,
+      credentials: sealCredentials(c), dailyLimit: b.dailyLimit, timezone: req.workspace?.timezone ?? "UTC",
     }).onConflictDoNothing().returning();
     if (!row) throw new HttpError(409, "mailbox_exists", "This mailbox is already connected");
     return publicMailbox(row, { today: 0, yesterday: 0 });
@@ -207,7 +207,7 @@ export async function mailboxRoutes(app: FastifyInstance) {
   // Bulk IMAP/SMTP connect: every row is tested; working rows are saved, failures are reported back.
   app.post("/v1/workspaces/:ws/mailboxes/bulk", async (req) => {
     requireRole(req, "owner", "admin", "member");
-    const b = body(req, z.object({ csv: z.string().min(1).max(2_000_000), timezone: z.string().default("UTC") }));
+    const b = body(req, z.object({ csv: z.string().min(1).max(2_000_000), timezone: z.string().optional() }));
     const workspaceId = wsId(req);
     const records = parseCsv(b.csv, { columns: (h: string[]) => h.map((x) => x.trim().toLowerCase().replace(/[\s-]+/g, "_")), skip_empty_lines: true, bom: true, relax_column_count: true, trim: true }) as Record<string, string>[];
     if (!records.length) throw new HttpError(400, "empty_csv", "The CSV has no rows");
@@ -224,7 +224,7 @@ export async function mailboxRoutes(app: FastifyInstance) {
           username: r.username || undefined, password: r.password,
           smtp: { host: r.smtp_host, port: r.smtp_port || 465, secure: bool(r.smtp_secure, (r.smtp_port || "465") === "465") },
           imap: { host: r.imap_host, port: r.imap_port || 993, secure: bool(r.imap_secure, true) },
-          dailyLimit: r.daily_limit || 30, timezone: r.timezone || b.timezone,
+          dailyLimit: r.daily_limit || 30, timezone: r.timezone || b.timezone || req.workspace?.timezone || "UTC",
         });
         if (!parsed.success) {
           const f = parsed.error.flatten().fieldErrors;
@@ -240,7 +240,7 @@ export async function mailboxRoutes(app: FastifyInstance) {
         const domain = await ensureDomain(workspaceId, parsed.data.email);
         const [saved] = await db.insert(mailboxes).values({
           workspaceId, domainId: domain.id, email: parsed.data.email, fromName: parsed.data.fromName, provider: "smtp",
-          credentials: sealCredentials(c), dailyLimit: parsed.data.dailyLimit, timezone: parsed.data.timezone,
+          credentials: sealCredentials(c), dailyLimit: parsed.data.dailyLimit, timezone: parsed.data.timezone ?? req.workspace?.timezone ?? "UTC",
         }).onConflictDoNothing().returning({ id: mailboxes.id });
         results.push(saved ? { row, email: parsed.data.email, ok: true } : { row, email: parsed.data.email, ok: false, error: "Already connected" });
       }
