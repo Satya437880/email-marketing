@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { apiKeys, db, dncEntries, labels, memberships, organizations, threads, users, WEBHOOK_EVENTS, webhooks, workspaces } from "@outreach/db";
-import { addDnc, assertPublicHttpsUrl, sendTestEvent } from "@outreach/core";
+import { addDnc, assertPublicHttpsUrl, removeDncEntries, sendTestEvent } from "@outreach/core";
 import { and, asc, desc, eq, ilike, inArray, isNull, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -152,8 +152,7 @@ export async function workspaceRoutes(app: FastifyInstance) {
 
   app.post("/v1/workspaces/:ws/dnc/delete", async (req) => {
     const b = body(req, z.object({ ids: z.array(z.string().uuid()).min(1) }));
-    await db.delete(dncEntries).where(and(eq(dncEntries.workspaceId, wsId(req)), inArray(dncEntries.id, b.ids)));
-    return { ok: true };
+    return { ok: true, ...(await removeDncEntries(wsId(req), b.ids)) };
   });
 
   app.get("/v1/workspaces/:ws/dnc/export", async (req, reply) => {

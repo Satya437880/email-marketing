@@ -1,5 +1,6 @@
-import { db, labels, organizations, SYSTEM_LABELS, dncEntries, workspaces } from "@outreach/db";
-import { and, eq, inArray, or } from "drizzle-orm";
+import { contacts, db, labels, organizations, SYSTEM_LABELS, dncEntries, sequenceContacts, sequences, workspaces } from "@outreach/db";
+import { alignToWindow } from "@outreach/engine";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 
 export async function seedWorkspace(workspaceId: string): Promise<void> {
   await db
@@ -48,4 +49,27 @@ export async function dncMatches(workspaceId: string, emails: string[]): Promise
 
 export async function addDnc(workspaceId: string, type: "email" | "domain", value: string, source: string): Promise<void> {
   await db.insert(dncEntries).values({ workspaceId, type, value: value.trim().toLowerCase(), source }).onConflictDoNothing();
+}
+
+// Removes entries from the do-not-contact list. An email that was on it is no longer "unsubscribed", and its contacts that were stopped
+// as opted out in a running sequence continue from the step they were waiting for, inside that sequence's sending window.
+export async function removeDncEntries(workspaceId: string, ids: string[], now = new Date()): Promise<{ removed: number; restored: number }> {
+  const entries = await db.select().from(dncEntries).where(and(eq(dncEntries.workspaceId, workspaceId), inArray(dncEntries.id, ids)));
+  if (!entries.length) return { removed: 0, restored: 0 };
+  await db.delete(dncEntries).where(and(eq(dncEntries.workspaceId, workspaceId), inArray(dncEntries.id, entries.map((e) => e.id))));
+  const emails = entries.filter((e) => e.type === "email").map((e) => e.value.toLowerCase());
+  if (!emails.length) return { removed: entries.length, restored: 0 };
+
+  const freed = await db.update(contacts).set({ unsubscribedAt: null })
+    .where(and(eq(contacts.workspaceId, workspaceId), inArray(sql`lower(${contacts.email})`, emails)))
+    .returning({ id: contacts.id });
+  if (!freed.length) return { removed: entries.length, restored: 0 };
+
+  const stopped = await db.select({ id: sequenceContacts.id, settings: sequences.settings }).from(sequenceContacts)
+    .innerJoin(sequences, eq(sequences.id, sequenceContacts.sequenceId))
+    .where(and(inArray(sequenceContacts.contactId, freed.map((c) => c.id)), eq(sequenceContacts.state, "opted_out"), eq(sequences.status, "active"), sql`${sequenceContacts.nextStep} is not null`));
+  for (const r of stopped) {
+    await db.update(sequenceContacts).set({ state: "active", nextRunAt: alignToWindow(now, r.settings.schedule), dueAt: now, lastError: null }).where(eq(sequenceContacts.id, r.id));
+  }
+  return { removed: entries.length, restored: stopped.length };
 }

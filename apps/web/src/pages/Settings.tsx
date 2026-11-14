@@ -546,8 +546,12 @@ function DncTab() {
     onSuccess: (r) => { toast(`${r.added} entries added`); setOpen(false); setValues(""); qc.invalidateQueries({ queryKey: ["dnc", ws] }); },
   });
   const del = useMutation({
-    mutationFn: () => api(`/v1/workspaces/${ws}/dnc/delete`, { body: { ids: [...selected] } }),
-    onSuccess: () => { toast(`Removed ${selected.size} entr${selected.size === 1 ? "y" : "ies"}`); setSelected(new Set()); qc.invalidateQueries({ queryKey: ["dnc", ws] }); },
+    mutationFn: () => api<{ removed: number; restored: number }>(`/v1/workspaces/${ws}/dnc/delete`, { body: { ids: [...selected] } }),
+    onSuccess: (r) => {
+      toast(`Removed ${r.removed} entr${r.removed === 1 ? "y" : "ies"}${r.restored ? ` · ${r.restored} contact${r.restored === 1 ? "" : "s"} back in their sequence` : ""}`);
+      setSelected(new Set());
+      for (const k of ["dnc", "contacts", "seq-contacts", "sequence", "sequences", "emails"]) void qc.invalidateQueries({ queryKey: [k, ws] });
+    },
   });
   const settings = useQuery({ queryKey: ["dnc-settings", ws], queryFn: () => api<{ mergeDnc: boolean; workspaceCount: number }>(`/v1/workspaces/${ws}/dnc/settings`) });
   const merge = useMutation({
