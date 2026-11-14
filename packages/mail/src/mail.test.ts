@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyInbound, extractReturnDate } from "./classify";
+import { classifyInbound, classifyReplyIntent, extractReturnDate } from "./classify";
 import { composeEmail } from "./compose";
 import { espFromMx } from "./esp";
 import { htmlToText, listVariables, render } from "./render";
@@ -131,5 +131,30 @@ describe("espFromMx", () => {
     expect(espFromMx(["acme-io.mail.protection.outlook.com"])).toBe("microsoft");
     expect(espFromMx(["mx.zoho.com"])).toBe("other");
     expect(espFromMx([])).toBe("unknown");
+  });
+
+  it("labels replies from what they say", () => {
+    const L = (t: string) => classifyReplyIntent(t);
+    expect(L("Yes, I'm interested. Can you send more details?")).toBe("Positive");
+    expect(L("Sounds good, let's chat next week.")).toBe("Positive");
+    expect(L("Not interested, thanks.")).toBe("Negative");
+    expect(L("We're all set with our current vendor.")).toBe("Negative");
+    expect(L("Not at this time, please reach out again next quarter.")).toBe("Not at this time");
+    expect(L("Bad timing, circle back in a few months.")).toBe("Not at this time");
+    expect(L("I'm no longer with Acme. Please contact Sam instead.")).toBe("Wrong contact");
+    expect(L("Booked! I sent a calendar invite for the call on Tuesday.")).toBe("Meeting booked");
+    expect(L("Thanks for reaching out.")).toBeNull();
+    expect(L("")).toBeNull();
+    // Quoted history is ignored: the original email says \"interested\" but the reply is a no.
+    expect(L("No thanks.\n\nOn Mon, Alex wrote:\n> Are you interested in a demo?")).toBe("Negative");
+  });
+
+  it("plain text keeps the signature, one blank line and the opt-out on separate lines", () => {
+    const e = composeEmail({
+      from: { name: "Mara", address: "m@x.com" }, to: "s@y.com", subject: "s", plainText: false,
+      bodyHtml: "Hey sarah,<br><br>how are you<br><br><br>", signatureHtml: "Mara Johnson<br>Maplempss",
+      optOut: { url: "https://t.acme.io/u/abc", text: "If you'd rather not hear from me, let me know" },
+    });
+    expect(e.text).toBe("Hey sarah,\n\nhow are you\n\nMara Johnson\nMaplempss\nIf you'd rather not hear from me, let me know here (https://t.acme.io/u/abc).");
   });
 });

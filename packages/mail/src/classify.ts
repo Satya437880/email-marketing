@@ -101,3 +101,26 @@ function parseLooseDate(s: string, now: Date): Date | undefined {
   }
   return undefined;
 }
+
+// What a genuine reply is about, judged from its own words (the quoted history below it is ignored). Returns the matching Primebox
+// label, or null when it is not clear, so a person can label it. Meeting completed and Closed depend on what happens after the reply,
+// so they are always set by hand.
+export type ReplyLabel = "Positive" | "Meeting booked" | "Negative" | "Wrong contact" | "Not at this time";
+
+const WRONG_CONTACT = /(wrong (person|contact|email|address)|not the (right|correct) (person|contact|one)|no longer (with|at|works?|employed)|left (the company|the organi[sz]ation|my (job|company))|(don'?t|do not) work (here|there) (any ?more|any longer)|you (may|might|should) (want to )?(contact|reach|speak|talk)|please (contact|reach out to|speak (to|with)|direct (this|your))|forward(ed)? (this|your (email|message)) to)/i;
+const NEGATIVE = /(not interested|no,? thanks?|no,? thank you|not a (good )?fit|not for us|not (something )?we('re| are| would be) (looking|interested)|we('re| are) (all set|good|covered|happy with)|already (have|use|work with|using)|(don'?t|do not) need|not looking|we'?ll pass|i'?ll pass|pass on this)/i;
+const NOT_NOW = /(not (right )?now|not at this time|bad timing|maybe later|check back|circle back|get back to you|reach out (again )?(in|next|after|later)|(next|following) (quarter|year|month)|in (a few|a couple of|some) (months|weeks)|after (the )?(holidays?|summer|new year|q[1-4])|busy (right now|at the moment|at present)|no budget|budget (is|has been|isn'?t) (frozen|tight|approved))/i;
+const MEETING_WORD = /(call|meeting|demo|chat|slot|time|calendar|invite)/i;
+const MEETING_BOOKED = /(\bbooked\b|\bscheduled\b|\bconfirmed\b|calendar invite|invite (sent|accepted)|accepted (your|the) invite|calendly\.com|cal\.com|see you (on|at|then)|looking forward to (speaking|talking|meeting|our (call|meeting|chat)))/i;
+const POSITIVE = /(\binterested\b|sounds (good|great|interesting|like)|\blove to\b|happy to (chat|talk|connect|jump|schedule|meet|learn)|let'?s (chat|talk|connect|schedule|set up|book|do)|send (me )?(more|over|some)? ?(info|details|information|pricing|a deck|the deck)|tell me more|can you (share|send|tell)|please call|call me|free (on|this|next|tomorrow)|available (on|this|next|tomorrow)|^\s*(yes|sure|ok(ay)?)\b)/im;
+
+export function classifyReplyIntent(text: string): ReplyLabel | null {
+  const own = (text.split(/\n>|\nOn .+wrote:|\n-{2,}\s*(original|forwarded)|\nFrom:\s/i)[0] ?? text).slice(0, 1500);
+  if (!own.trim()) return null;
+  if (WRONG_CONTACT.test(own)) return "Wrong contact";
+  if (NEGATIVE.test(own)) return "Negative";
+  if (NOT_NOW.test(own)) return "Not at this time";
+  if (MEETING_BOOKED.test(own) && MEETING_WORD.test(own)) return "Meeting booked";
+  if (POSITIVE.test(own)) return "Positive";
+  return null;
+}

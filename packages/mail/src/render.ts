@@ -89,6 +89,8 @@ export function listVariables(template: string): string[] {
 export function htmlToText(html: string): string {
   return html
     .replace(/<br\s*\/?>/gi, "\n")
+    // A block starts on its own line, so a <div> right after a line of text does not run into it.
+    .replace(/<div(\s[^>]*)?>/gi, "\n")
     .replace(/<\/(p|div|li|h[1-6])>/gi, "\n")
     .replace(/<a\s[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/gi, (_, href, text) => (text === href ? href : `${text} (${href})`))
     .replace(/<[^>]+>/g, "")

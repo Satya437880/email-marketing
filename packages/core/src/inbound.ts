@@ -1,6 +1,6 @@
 import { companies, contacts, db, events, mailboxes, messages, sequenceContacts, sequences, threads, workspaces } from "@outreach/db";
 import { alignToWindow, localDayKey } from "@outreach/engine";
-import { classifyInbound, fetchNewMessages, type FetchedMessage } from "@outreach/mail";
+import { classifyInbound, classifyReplyIntent, fetchNewMessages, type FetchedMessage } from "@outreach/mail";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { connectionFor } from "./mailbox";
 import { maybeCompleteSequence } from "./send";
@@ -110,6 +110,8 @@ export async function processInbound(mailbox: Mailbox, msg: FetchedMessage, now 
   } else if (kind.kind === "auto_reply") {
     label = "Automatic";
   } else {
+    // A genuine reply is labelled from what it says (Positive, Negative, Meeting booked...) when that is clear.
+    if (kind.kind === "reply") label = classifyReplyIntent(msg.text);
     if (kind.kind === "unsubscribe") {
       label = "Unsubscribed";
       await addDnc(wsId, "email", contact.email, "reply");
