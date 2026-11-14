@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import {
   contacts, db, events, mailboxes, messages, sequenceContacts, sequences, sequenceSteps, stepVariants, threads,
 } from "@outreach/db";
-import { localDayKey, nextEmailStep, pickVariant } from "@outreach/engine";
+import { alignToWindow, localDayKey, nextEmailStep, pickVariant } from "@outreach/engine";
 import { composeEmail, domainAcceptsMail, render, sendSmtp, type Variables } from "@outreach/mail";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { connectionFor } from "./mailbox";
@@ -66,7 +66,7 @@ export async function executeSend(job: SendJob, opts: { trackingBaseUrl: string;
   if (sc.state !== "sending" || !sequence || sequence.status !== "active" || mailbox.status !== "active") {
     await releaseReservation(mailbox, now);
     if (sc.state === "sending") {
-      await db.update(sequenceContacts).set({ state: "active", nextRunAt: now }).where(eq(sequenceContacts.id, sc.id));
+      await db.update(sequenceContacts).set({ state: "active", nextRunAt: now, dueAt: now }).where(eq(sequenceContacts.id, sc.id));
     }
     return "skipped";
   }
@@ -191,7 +191,8 @@ export async function executeSend(job: SendJob, opts: { trackingBaseUrl: string;
       state: next ? "active" : "finished",
       currentStep: job.stepIndex,
       nextStep: next?.index ?? null,
-      nextRunAt: next?.dueAt ?? null,
+      nextRunAt: next ? alignToWindow(next.dueAt, sequence.settings.schedule) : null,
+      dueAt: next?.dueAt ?? null,
       threadId: thread!.id,
       lastError: null,
     }).where(and(eq(sequenceContacts.id, sc.id), eq(sequenceContacts.state, "sending")));

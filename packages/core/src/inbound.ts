@@ -1,5 +1,5 @@
 import { companies, contacts, db, events, mailboxes, messages, sequenceContacts, sequences, threads, workspaces } from "@outreach/db";
-import { localDayKey } from "@outreach/engine";
+import { alignToWindow, localDayKey } from "@outreach/engine";
 import { classifyInbound, fetchNewMessages, type FetchedMessage } from "@outreach/mail";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { connectionFor } from "./mailbox";
@@ -99,9 +99,11 @@ export async function processInbound(mailbox: Mailbox, msg: FetchedMessage, now 
   if (kind.kind === "out_of_office") {
     label = "Out of office";
     for (const s of openScs) {
-      const resume = new Date((kind.returnDate ?? new Date(now.getTime() + 7 * 86400000)).getTime() + s.settings.oooBufferDays * 86400000);
+      const back = new Date((kind.returnDate ?? new Date(now.getTime() + 7 * 86400000)).getTime() + s.settings.oooBufferDays * 86400000);
+      // Restarts follow the sequence's own schedule (timezone, active days, per-day hours), the same as normal sends.
+      const resume = alignToWindow(back, s.settings.schedule);
       await db.update(sequenceContacts)
-        .set(s.settings.oooAutoResume ? { state: "ooo", nextRunAt: resume } : { state: "replied", nextRunAt: null })
+        .set(s.settings.oooAutoResume ? { state: "ooo", nextRunAt: resume, dueAt: back } : { state: "replied", nextRunAt: null })
         .where(eq(sequenceContacts.id, s.id));
     }
     await event("ooo", { returnDate: kind.returnDate?.toISOString() ?? null });

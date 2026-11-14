@@ -3,7 +3,7 @@ import {
   ArrowLeft, Building2, CalendarClock, ChevronRight, Clock, DollarSign, Eye, FileText, Filter as Funnel, Forward, HelpCircle, Link2, LogOut, Mail, MailOpen, MessageSquareReply,
   MousePointerClick, Pencil, Plus, Rocket, Save, Search, Send, Server, ShieldCheck, SlidersHorizontal, Trash2, Type, UserCheck, UserPlus, Users, X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, type Contact, type Mailbox, type Paged, type SenderProfile, type SequenceDetail, type SequenceSettings, type Step, type Tag } from "../api";
 import { useWs } from "../App";
@@ -33,6 +33,7 @@ function SequenceEditor() {
   const seq = useQuery({ queryKey: ["sequence", ws, id], queryFn: () => api<SequenceDetail>(`/v1/workspaces/${ws}/sequences/${id}`) });
   const [steps, setSteps] = useState<Step[]>([]);
   const [dirty, setDirty] = useState(false);
+  const settingsSave = useRef<SaveSettings | null>(null);
 
   useEffect(() => {
     if (seq.data && !dirty) {
@@ -58,6 +59,11 @@ function SequenceEditor() {
 
   if (seq.isLoading || !seq.data) return <Spinner />;
   const s = seq.data;
+  // Leaving the Schedule or Settings screen saves any unsaved changes first.
+  const go = async (n: number) => {
+    if ((step === 3 || step === 4) && settingsSave.current && !(await settingsSave.current())) return;
+    setStep(n);
+  };
 
   return (
     <div className="flex flex-col min-h-full">
@@ -74,7 +80,7 @@ function SequenceEditor() {
             {s.status === "paused" && <button className="btn-primary" onClick={() => action.mutate("resume")}>Resume</button>}
           </div>
         </div>
-        <Stepper step={step} onStep={setStep} />
+        <Stepper step={step} onStep={(n) => void go(n)} />
       </div>
 
       <div className={cx("flex-1 p-4 md:p-8 w-full", step === 2 ? "max-w-[1800px]" : "max-w-6xl")}>
@@ -92,13 +98,13 @@ function SequenceEditor() {
             ? <StepHeader title="Schedule" help="The days and hours emails may be sent, in the time zone below." text="Activate the days on which emails should be sent out." />
             : <StepHeader title="Settings" help="Rotation, priorities and deliverability rules." text="Choose the mailboxes that send this sequence and how it behaves." />}
           {step === 4 && <section className="pt-6"><h3 className="text-sm font-semibold mb-3">Rotation</h3><SendersTab sequence={s} onChange={refresh} /></section>}
-          <SettingsTab sequence={s} onChange={refresh} section={step === 3 ? "schedule" : "settings"} />
+          <SettingsTab sequence={s} onChange={refresh} section={step === 3 ? "schedule" : "settings"} registerSave={(fn) => { settingsSave.current = fn; }} />
         </>}
 
         <div className="flex items-center justify-between pt-8 mt-4 border-t border-ink-200">
-          <button className="btn-secondary h-10" disabled={step === 0} onClick={() => setStep((x) => Math.max(0, x - 1))}>Back</button>
+          <button className="btn-secondary h-10" disabled={step === 0} onClick={() => void go(Math.max(0, step - 1))}>Back</button>
           {step < WIZARD_STEPS.length - 1
-            ? <button className="btn-primary h-10" onClick={() => setStep((x) => Math.min(WIZARD_STEPS.length - 1, x + 1))}>Next: {WIZARD_STEPS[step + 1]!.label}</button>
+            ? <button className="btn-primary h-10" onClick={() => void go(Math.min(WIZARD_STEPS.length - 1, step + 1))}>Next: {WIZARD_STEPS[step + 1]!.label}</button>
             : <span className="text-sm text-ink-500">{s.status === "draft" ? "All set? Use Launch at the top." : ""}</span>}
         </div>
       </div>
@@ -763,7 +769,9 @@ const tzLabel = (tz: string) => {
   } catch { return tz; }
 };
 
-function SettingsTab({ sequence, onChange, section = "all" }: { sequence: SequenceDetail; onChange: () => void; section?: "all" | "schedule" | "settings" }) {
+type SaveSettings = () => Promise<boolean>;
+
+function SettingsTab({ sequence, onChange, section = "all", registerSave }: { sequence: SequenceDetail; onChange: () => void; section?: "all" | "schedule" | "settings"; registerSave?: (fn: SaveSettings | null) => void }) {
   const ws = useWs();
   const toast = useToast();
   const qc = useQueryClient();
@@ -784,8 +792,17 @@ function SettingsTab({ sequence, onChange, section = "all" }: { sequence: Sequen
       method: "PATCH",
       body: { priority, settings: { ...withoutProduct(st), cc: ccOn ? parseList(ccText.cc) : [], bcc: ccOn ? parseList(ccText.bcc) : [] } },
     }),
-    onSuccess: () => { toast("Settings saved"); onChange(); },
+    onSuccess: () => { toast("Settings saved"); onChange(); void qc.invalidateQueries({ queryKey: ["emails", ws] }); void qc.invalidateQueries({ queryKey: ["seq-contacts", ws] }); },
     onError: (e: Error) => toast(e.message, "error"),
+  });
+  // Next / Back / the step tabs call this first, so the timezone, days and hours are never lost when leaving the screen.
+  useEffect(() => {
+    registerSave?.(async () => {
+      if (!dirty) return true;
+      if (scheduleInvalid(st.schedule)) { toast("Fix the schedule first: each end hour must be after its start hour", "error"); return false; }
+      try { await save.mutateAsync(); return true; } catch { return false; }
+    });
+    return () => registerSave?.(null);
   });
   const set = <K extends keyof SequenceSettings>(k: K, v: SequenceSettings[K]) => setSt((x) => ({ ...x, [k]: v }));
   const notRecommended = <span className="chip bg-red-50 text-red-600 border border-red-200 shrink-0">Not recommended</span>;
@@ -824,7 +841,7 @@ function SettingsTab({ sequence, onChange, section = "all" }: { sequence: Sequen
         </SettingsRow>
 
         <SettingsRow title="Out of office" show={show("settings")}>
-          <OptionCard icon={<CalendarClock size={16} />} title="Auto-resume after OOO" text="When an OOO reply includes a return date, the contact goes back to Active after the buffer below and continues from the next step." checked={st.oooAutoResume} onChange={(v) => set("oooAutoResume", v)}>
+          <OptionCard icon={<CalendarClock size={16} />} title="Auto-resume after OOO" text="When an OOO reply includes a return date, the contact goes back to Active after the buffer below and continues from the next step. If that day or time is outside this sequence's schedule, it waits for the next open window." checked={st.oooAutoResume} onChange={(v) => set("oooAutoResume", v)}>
             <label className="flex items-center gap-2 text-sm">Buffer <input type="number" min={0} max={30} className="input h-8 w-20" value={st.oooBufferDays} onChange={(e) => set("oooBufferDays", Math.max(0, Number(e.target.value)))} /> days after they're back</label>
           </OptionCard>
         </SettingsRow>

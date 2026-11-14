@@ -12,6 +12,8 @@ interface EmailRow {
   kind: "scheduled" | "sent";
   status: "scheduled" | "paused" | "sent";
   at: string | null;
+  // Time zone of the sequence schedule, so the web can show the send time in it.
+  timezone: string | null;
   contactId: string | null;
   email: string;
   name: string;
@@ -26,7 +28,7 @@ interface EmailRow {
 
 type DueRow = {
   id: string; state: string; next_run_at: Date; seq_status: string; contact_id: string; email: string; first_name: string; last_name: string;
-  company_name: string; title: string; seq_id: string; seq_name: string; step_no: number; step_total: number; subject: string | null; body_html: string | null;
+  company_name: string; title: string; seq_id: string; seq_name: string; step_no: number; step_total: number; subject: string | null; body_html: string | null; tz: string | null;
 };
 
 type SentRow = {
@@ -57,7 +59,7 @@ export async function emailRoutes(app: FastifyInstance) {
                s.id as seq_id, s.name as seq_name,
                (select count(*)::int from sequence_steps x where x.sequence_id = sc.sequence_id and x.type = 'email' and x.position <= sc.next_step) as step_no,
                (select count(*)::int from sequence_steps x where x.sequence_id = sc.sequence_id and x.type = 'email') as step_total,
-               v.subject, v.body_html
+               v.subject, v.body_html, s.settings->'schedule'->>'timezone' as tz
         from sequence_contacts sc
         join contacts c on c.id = sc.contact_id
         join sequences s on s.id = sc.sequence_id
@@ -74,7 +76,7 @@ export async function emailRoutes(app: FastifyInstance) {
         const plain = (r.body_html ?? "").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
         const paused = r.seq_status !== "active" || r.state === "ooo";
         rows.push({
-          id: r.id, kind: "scheduled", status: paused ? "paused" : "scheduled", at: new Date(r.next_run_at).toISOString(), contactId: r.contact_id,
+          id: r.id, kind: "scheduled", status: paused ? "paused" : "scheduled", at: new Date(r.next_run_at).toISOString(), timezone: r.tz, contactId: r.contact_id,
           email: r.email, name: `${r.first_name} ${r.last_name}`.trim(), sequenceId: r.seq_id, sequenceName: r.seq_name, step: r.step_no, steps: r.step_total,
           subject: subject || "Replies in the same thread", snippet: render(plain, vars, { seed: r.id }).slice(0, 160), canSendNow: !paused,
         });
@@ -98,7 +100,7 @@ export async function emailRoutes(app: FastifyInstance) {
       `) as unknown as SentRow[];
       for (const r of sent) {
         rows.push({
-          id: r.id, kind: "sent", status: "sent", at: new Date(r.sent_at).toISOString(), contactId: r.contact_id, email: r.to_address,
+          id: r.id, kind: "sent", status: "sent", at: new Date(r.sent_at).toISOString(), timezone: null, contactId: r.contact_id, email: r.to_address,
           name: `${r.first_name ?? ""} ${r.last_name ?? ""}`.trim(), sequenceId: r.seq_id, sequenceName: r.seq_name, step: r.step_no, steps: r.step_total,
           subject: r.subject, snippet: r.body_text.replace(/\s+/g, " ").trim(), canSendNow: false,
         });
@@ -124,7 +126,7 @@ export async function emailRoutes(app: FastifyInstance) {
     `) as unknown as { id: string; seq_status: string }[];
     if (!row) notFound("Scheduled email");
     if (row.seq_status !== "active") throw new HttpError(409, "sequence_not_active", "Resume the sequence first, then send this email.");
-    await db.execute(sql`update sequence_contacts set next_run_at = now() where id = ${row.id}`);
+    await db.execute(sql`update sequence_contacts set next_run_at = now(), due_at = now() where id = ${row.id}`);
     return { ok: true };
   });
 

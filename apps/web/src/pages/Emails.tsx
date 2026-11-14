@@ -11,6 +11,7 @@ interface EmailItem {
   kind: "scheduled" | "sent";
   status: "scheduled" | "paused" | "sent";
   at: string | null;
+  timezone: string | null;
   contactId: string | null;
   email: string;
   name: string;
@@ -25,6 +26,30 @@ interface EmailItem {
 interface EmailList { items: EmailItem[]; total: number; scheduled: number }
 
 const PAGE_SIZE = 50;
+
+const ZONE_ABBR: Record<string, string> = { "Asia/Calcutta": "IST", "Asia/Kolkata": "IST", UTC: "UTC", "Etc/UTC": "UTC", "Europe/London": "UK time" };
+// "Sat 14 Nov, 10:05 AM IST": the time in the sequence's own zone, with the zone's name.
+function inZone(iso: string, tz: string): string {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit", timeZoneName: "short" }).formatToParts(new Date(iso));
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+  const zone = ZONE_ABBR[tz] ?? get("timeZoneName");
+  return `${get("weekday")} ${get("day")} ${get("month")}, ${get("hour")}:${get("minute")} ${get("dayPeriod")} ${zone}`;
+}
+const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+function SendTime({ m }: { m: EmailItem }) {
+  if (!m.at) return <>—</>;
+  if (m.kind !== "scheduled" || !m.timezone) return <div>{fmtDate(m.at, true)}</div>;
+  let main: string;
+  try { main = inZone(m.at, m.timezone); } catch { return <div>{fmtDate(m.at, true)}</div>; }
+  const mine = m.timezone !== localZone ? inZone(m.at, localZone) : null;
+  return (
+    <>
+      <div>{main}</div>
+      {mine && <div className="text-xs text-ink-500">Your time: {mine}</div>}
+    </>
+  );
+}
 const STATUS_STYLE: Record<EmailItem["status"], string> = {
   scheduled: "bg-sky-50 text-sky-700",
   paused: "bg-amber-50 text-amber-700",
@@ -87,7 +112,7 @@ export function EmailsPage() {
                     </td>
                     <td className="td"><span className={cx("chip", STATUS_STYLE[m.status])}>{STATUS_LABEL[m.status]}</span></td>
                     <td className="td whitespace-nowrap">
-                      <div>{fmtDate(m.at, true)}</div>
+                      <SendTime m={m} />
                       <div className="text-xs text-ink-500">{m.kind === "scheduled" ? "Goes out" : "Sent"}</div>
                     </td>
                     <td className="td">

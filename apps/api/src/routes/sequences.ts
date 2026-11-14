@@ -1,4 +1,4 @@
-import { addContactsToSequence, contactVariables, launchSequence, LaunchError, connectionFor, renderSignature, setSequenceStatus } from "@outreach/core";
+import { addContactsToSequence, contactVariables, launchSequence, LaunchError, connectionFor, renderSignature, rescheduleWaitingEmails, setSequenceStatus } from "@outreach/core";
 import {
   contacts, db, DEFAULT_SEQUENCE_SETTINGS, labels, mailboxes, products, senderProfileMailboxes, senderProfiles, sequenceContacts, sequences, sequenceSenders, sequenceSteps, stepVariants,
   type SequenceSettings,
@@ -36,6 +36,8 @@ const settingsSchema = z.object({
   bounceShield: z.boolean(),
   trackOpportunities: z.boolean(),
 }).partial();
+
+const sortKeys = (v: unknown): unknown => (Array.isArray(v) ? v.map(sortKeys) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b)).map(([k, x]) => [k, sortKeys(x)])) : v);
 
 const ATTACH_MAX_BYTES = 10 * 1024 * 1024;
 
@@ -209,6 +211,10 @@ export async function sequenceRoutes(app: FastifyInstance) {
     const [row] = await db.update(sequences).set({
       name: b.name, priority: b.priority, settings: b.settings ? { ...seq.settings, ...b.settings } : undefined,
     }).where(eq(sequences.id, seq.id)).returning();
+    // A new timezone, day or hour places every waiting email again.
+    if (row && b.settings?.schedule && JSON.stringify(sortKeys(row.settings.schedule)) !== JSON.stringify(sortKeys(seq.settings.schedule))) {
+      await rescheduleWaitingEmails(seq.id, row.settings.schedule);
+    }
     return row;
   });
 
@@ -425,7 +431,7 @@ export async function sequenceRoutes(app: FastifyInstance) {
     const p = params(req, idParams);
     const b = body(req, z.object({ ids: z.array(z.string().uuid()).optional() }));
     await owned(wsId(req), p.id);
-    const rows = await db.update(sequenceContacts).set({ state: "active", nextRunAt: new Date(), lastError: null })
+    const rows = await db.update(sequenceContacts).set({ state: "active", nextRunAt: new Date(), dueAt: new Date(), lastError: null })
       .where(and(eq(sequenceContacts.sequenceId, p.id), eq(sequenceContacts.state, "ooo"), b.ids?.length ? inArray(sequenceContacts.id, b.ids) : undefined))
       .returning({ id: sequenceContacts.id });
     return { resumed: rows.length };
@@ -437,7 +443,7 @@ export async function sequenceRoutes(app: FastifyInstance) {
     const b = body(req, z.object({ ids: z.array(z.string().uuid()).optional() }));
     await owned(wsId(req), p.id);
     const rows = await db.update(sequenceContacts)
-      .set({ state: "active", nextStep: sql`coalesce(${sequenceContacts.nextStep}, ${sequenceContacts.currentStep} + 1)`, nextRunAt: new Date(), lastError: null })
+      .set({ state: "active", nextStep: sql`coalesce(${sequenceContacts.nextStep}, ${sequenceContacts.currentStep} + 1)`, nextRunAt: new Date(), dueAt: new Date(), lastError: null })
       .where(and(eq(sequenceContacts.sequenceId, p.id), eq(sequenceContacts.state, "error"), b.ids?.length ? inArray(sequenceContacts.id, b.ids) : undefined))
       .returning({ id: sequenceContacts.id });
     return { retried: rows.length };

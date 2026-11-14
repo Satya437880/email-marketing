@@ -1,5 +1,7 @@
 export interface SendSchedule {
+  // IANA zone chosen on the Schedule tab. Days and hours are always read in this zone.
   timezone: string;
+  // Weekday numbers with Sunday = 0 ... Saturday = 6 (the same numbering the Schedule tab saves).
   days: number[];
   start: string;
   end: string;
@@ -61,6 +63,17 @@ export function nextWindowStart(from: Date, s: SendSchedule): Date | null {
     if (isInWindow(new Date(t), s)) return new Date(t);
   }
   return null;
+}
+
+// The send time for something that becomes due at `due`: now/then if inside the window, otherwise the start of the next open window.
+export function alignToWindow(due: Date, s: SendSchedule): Date {
+  return nextWindowStart(due, s) ?? due;
+}
+
+// When the schedule changes, every email still waiting is placed again: from the moment it first became due (never earlier than now)
+// to the start of the next open window of the new schedule.
+export function recalculateDue(items: { dueAt: Date }[], s: SendSchedule, now: Date): Date[] {
+  return items.map((i) => alignToWindow(new Date(Math.max(i.dueAt.getTime(), now.getTime())), s));
 }
 
 // Daily counters reset at local midnight of the mailbox's time zone.

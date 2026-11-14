@@ -325,6 +325,8 @@ export const sequenceContacts = pgTable("sequence_contacts", {
   currentStep: integer("current_step").notNull().default(-1),
   nextStep: integer("next_step"),
   nextRunAt: timestamp("next_run_at", { withTimezone: true }),
+  // When the next email first became due, before the sending window is applied. Used to place it again if the schedule changes.
+  dueAt: timestamp("due_at", { withTimezone: true }),
   assignedMailboxId: uuid("assigned_mailbox_id").references(() => mailboxes.id, { onDelete: "set null" }),
   threadId: uuid("thread_id"),
   lastError: text("last_error"),

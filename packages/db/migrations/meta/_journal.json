@@ -120,6 +120,13 @@
       "when": 1794597779359,
       "tag": "0016_luxuriant_scarlet_witch",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1794631341868,
+      "tag": "0017_daily_spectrum",
+      "breakpoints": true
     }
   ]
 }

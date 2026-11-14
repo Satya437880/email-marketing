@@ -1,5 +1,5 @@
 import { db, sequenceContacts, sequences, sequenceSteps } from "@outreach/db";
-import { nextEmailStep } from "@outreach/engine";
+import { alignToWindow, nextEmailStep, recalculateDue, type SendSchedule } from "@outreach/engine";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 
 async function firstEmailIndex(sequenceId: string) {
@@ -22,12 +22,28 @@ export async function addContactsToSequence(workspaceId: string, sequenceId: str
       contactId,
       state: live && first ? ("active" as const) : ("queued" as const),
       nextStep: live && first ? first.index : null,
-      nextRunAt: live && first ? first.dueAt : null,
+      nextRunAt: live && first ? alignToWindow(first.dueAt, seq.settings.schedule) : null,
+      dueAt: live && first ? first.dueAt : null,
     }))).onConflictDoNothing().returning({ id: sequenceContacts.id });
     added += rows.length;
   }
   if (added && seq.status === "completed") await db.update(sequences).set({ status: "active" }).where(eq(sequences.id, sequenceId));
   return added;
+}
+
+// After the Schedule tab changes, every email of this sequence that is still waiting is placed again in the new timezone, days and hours.
+export async function rescheduleWaitingEmails(sequenceId: string, schedule: SendSchedule, now = new Date()): Promise<number> {
+  const rows = await db.select({ id: sequenceContacts.id, state: sequenceContacts.state, dueAt: sequenceContacts.dueAt, nextRunAt: sequenceContacts.nextRunAt }).from(sequenceContacts)
+    .where(and(eq(sequenceContacts.sequenceId, sequenceId), inArray(sequenceContacts.state, ["active", "ooo"]), sql`${sequenceContacts.nextRunAt} is not null`, sql`${sequenceContacts.nextStep} is not null`));
+  const placed = recalculateDue(rows.map((r) => ({ dueAt: r.dueAt ?? r.nextRunAt! })), schedule, now);
+  let changed = 0;
+  for (const [i, r] of rows.entries()) {
+    const at = placed[i]!;
+    if (r.nextRunAt && r.nextRunAt.getTime() === at.getTime()) continue;
+    await db.update(sequenceContacts).set({ nextRunAt: at, lastError: null }).where(and(eq(sequenceContacts.id, r.id), inArray(sequenceContacts.state, ["active", "ooo"])));
+    changed++;
+  }
+  return changed;
 }
 
 export class LaunchError extends Error {}
@@ -53,7 +69,7 @@ export async function launchSequence(workspaceId: string, sequenceId: string): P
   await db.transaction(async (tx) => {
     await tx.update(sequences).set({ status: "active", launchedAt: seq.launchedAt ?? new Date() }).where(eq(sequences.id, sequenceId));
     // The first email's "start after" wait counts from launch.
-    await tx.update(sequenceContacts).set({ state: "active", nextStep: first.index, nextRunAt: first.dueAt })
+    await tx.update(sequenceContacts).set({ state: "active", nextStep: first.index, nextRunAt: alignToWindow(first.dueAt, seq.settings.schedule), dueAt: first.dueAt })
       .where(and(eq(sequenceContacts.sequenceId, sequenceId), eq(sequenceContacts.state, "queued")));
   });
 }
