@@ -1,14 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft, Building2, CalendarClock, ChevronRight, Clock, DollarSign, Eye, FileText, Filter as Funnel, Forward, HelpCircle, Link2, LogOut, Mail, MailOpen, MessageSquareReply,
-  MousePointerClick, Plus, Rocket, Save, Search, Send, Server, ShieldCheck, SlidersHorizontal, Trash2, Type, UserCheck, UserPlus, Users, X,
+  MousePointerClick, Pencil, Plus, Rocket, Save, Search, Send, Server, ShieldCheck, SlidersHorizontal, Trash2, Type, UserCheck, UserPlus, Users, X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, type Contact, type Mailbox, type Paged, type SenderProfile, type SequenceDetail, type SequenceSettings, type Step, type Tag } from "../api";
 import { useWs } from "../App";
 import { cx, Empty, fmtDate, Modal, Pager, SafeHtml, Spinner, StatusPill, Toggle, useToast } from "../ui";
-import { ImportModal } from "./Contacts";
+import { EditContactModal, ImportModal, type EditableContact } from "./Contacts";
 import { SequenceOverview } from "./SequenceOverview";
 import { StepBuilder } from "../StepBuilder";
 import { NameServiceStep, Stepper, StepHeader, WIZARD_STEPS } from "./SequenceSteps";
@@ -120,6 +120,7 @@ export function ContactsTab({ sequenceId, onChange }: { sequenceId: string; onCh
   const [filterOpen, setFilterOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<EditableContact | null>(null);
 
   // Wait for a pause in typing before searching.
   useEffect(() => {
@@ -127,7 +128,7 @@ export function ContactsTab({ sequenceId, onChange }: { sequenceId: string; onCh
     return () => clearTimeout(t);
   }, [search]);
 
-  type Row = { id: string; state: string; currentStep: number; nextRunAt: string | null; lastError: string | null; sent: number; opened: number; clicked: number; replied: number; contact: { email: string; firstName: string; lastName: string; companyName: string } };
+  type Row = { id: string; state: string; currentStep: number; nextRunAt: string | null; lastError: string | null; sent: number; opened: number; clicked: number; replied: number; contact: { id: string; email: string; firstName: string; lastName: string; companyName: string; title: string; linkedinUrl: string } };
   const mailboxes = useQuery({ queryKey: ["mailboxes", ws], queryFn: () => api<Mailbox[]>(`/v1/workspaces/${ws}/mailboxes`) });
   const params = new URLSearchParams({ page: String(page) });
   if (term) params.set("q", term);
@@ -227,7 +228,7 @@ export function ContactsTab({ sequenceId, onChange }: { sequenceId: string; onCh
       {list.isLoading ? <Spinner /> : !rows.length ? (
         term || activeFilters
           ? <Empty icon={<Search size={20} />} title="No contacts match" text="Try a different search or clear the filters." action={<button className="btn-secondary" onClick={() => { setSearch(""); setState(""); setEngagement(""); setMailboxId(""); }}>Clear search and filters</button>} />
-          : <Empty icon={<Users size={20} />} title="No contacts in this sequence" text="Add contacts by tag. Import them on the Contacts page first." action={<button className="btn-primary" onClick={() => setAdding(true)}>Add contacts</button>} />
+          : <Empty icon={<Users size={20} />} title="No contacts in this sequence" text="Add a single contact, pick existing ones, or import a CSV or Google Sheet." action={<button className="btn-primary" onClick={() => setAdding(true)}>Add contacts</button>} />
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full">
@@ -259,6 +260,7 @@ export function ContactsTab({ sequenceId, onChange }: { sequenceId: string; onCh
                   <td className="td text-center">{num(r.clicked)}</td>
                   <td className="td text-center border-r">{num(r.replied)}</td>
                   <td className="td text-center whitespace-nowrap">
+                    <button className="btn-ghost btn-sm" onClick={() => setEditing(r.contact)} title="Edit contact" aria-label={`Edit ${r.contact.email}`}><Pencil size={14} /></button>
                     {r.state === "ooo" && <button className="btn-ghost btn-sm" onClick={() => resumeOoo.mutate([r.id])}>Resume</button>}
                     {r.state === "error" && <button className="btn-ghost btn-sm" onClick={() => retry.mutate([r.id])}>Retry</button>}
                     {["queued", "active", "sending", "ooo"].includes(r.state) && <button className="btn-ghost btn-sm text-red-700" onClick={() => remove.mutate([r.id])} title="Remove from this sequence"><Trash2 size={14} /></button>}
@@ -270,6 +272,7 @@ export function ContactsTab({ sequenceId, onChange }: { sequenceId: string; onCh
           <Pager page={page} pageSize={20} total={list.data?.total ?? 0} onPage={setPage} />
         </div>
       )}
+      {editing && <EditContactModal contact={editing} onClose={() => setEditing(null)} />}
       {adding && <AddContactsModal sequenceId={sequenceId} onClose={() => setAdding(false)} onAdded={onAdded} />}
     </div>
   );
@@ -277,7 +280,8 @@ export function ContactsTab({ sequenceId, onChange }: { sequenceId: string; onCh
 
 // First screen: choose where contacts come from. "Existing contacts" opens the picker; the others run an import into this sequence.
 function AddContactsModal(props: { sequenceId: string; onClose: () => void; onAdded: (r: { added: number; alreadyIn: number }) => void }) {
-  const [source, setSource] = useState<"choose" | "existing" | "google_sheet" | "csv">("choose");
+  const [source, setSource] = useState<"choose" | "single" | "existing" | "google_sheet" | "csv">("choose");
+  if (source === "single") return <SingleContactModal sequenceId={props.sequenceId} onBack={() => setSource("choose")} onClose={props.onClose} onAdded={props.onAdded} />;
   if (source === "existing") return <ExistingContactsModal {...props} />;
   if (source === "google_sheet" || source === "csv") return <ImportModal sequenceId={props.sequenceId} source={source} onClose={props.onClose} onBack={() => setSource("choose")} />;
   const row = (icon: React.ReactNode, label: string, onClick: () => void) => (
@@ -291,11 +295,55 @@ function AddContactsModal(props: { sequenceId: string; onClose: () => void; onAd
     <Modal open onClose={props.onClose} title="Add contacts" flush>
       <div className="p-4">
         <div className="rounded-xl border border-ink-200 divide-y divide-ink-100 overflow-hidden">
+          {row(<UserPlus size={18} />, "Add a single contact", () => setSource("single"))}
           {row(<Users size={18} />, "Existing contacts", () => setSource("existing"))}
           {row(<GoogleG />, "Google sheet URL", () => setSource("google_sheet"))}
           {row(<FileText size={18} />, "Upload a CSV file", () => setSource("csv"))}
         </div>
       </div>
+    </Modal>
+  );
+}
+
+// Type one contact's details; they are saved to Contacts (or matched if the email already exists) and added to this sequence.
+function SingleContactModal({ sequenceId, onBack, onClose, onAdded }: { sequenceId: string; onBack: () => void; onClose: () => void; onAdded: (r: { added: number; alreadyIn: number }) => void }) {
+  const ws = useWs();
+  const toast = useToast();
+  const qc = useQueryClient();
+  const [f, setF] = useState({ first_name: "", last_name: "", email: "", company_name: "", title: "" });
+  const [tried, setTried] = useState(false);
+  const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF((x) => ({ ...x, [k]: e.target.value }));
+  const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email.trim());
+  const save = useMutation({
+    mutationFn: async () => {
+      const body = Object.fromEntries(Object.entries(f).map(([k, v]) => [k, v.trim()]).filter(([, v]) => v));
+      const contact = await api<Contact>(`/v1/workspaces/${ws}/contacts`, { body });
+      return api<{ added: number; alreadyIn: number }>(`/v1/workspaces/${ws}/sequences/${sequenceId}/contacts`, { body: { contactIds: [contact.id] } });
+    },
+    onSuccess: (r) => { void qc.invalidateQueries({ queryKey: ["contacts", ws] }); onAdded(r); },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+  return (
+    <Modal open onClose={onClose} title="Add a single contact" footer={<>
+      <button className="btn-secondary" onClick={onBack}>Back</button>
+      <button className="btn-primary" disabled={save.isPending} onClick={() => { setTried(true); if (emailOk) save.mutate(); }}>{save.isPending ? "Adding…" : "Add to sequence"}</button>
+    </>}>
+      <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); setTried(true); if (emailOk) save.mutate(); }}>
+        <div className="grid sm:grid-cols-2 gap-4">
+          <div><label className="label">First name</label><input className="input h-10" value={f.first_name} onChange={set("first_name")} autoFocus /></div>
+          <div><label className="label">Last name</label><input className="input h-10" value={f.last_name} onChange={set("last_name")} /></div>
+        </div>
+        <div>
+          <label className="label">Email</label>
+          <input className={cx("input h-10", tried && !emailOk && "border-red-500")} type="email" value={f.email} onChange={set("email")} />
+          {tried && !emailOk && <p className="text-xs text-red-600 mt-1">Enter a valid email address</p>}
+        </div>
+        <div className="grid sm:grid-cols-2 gap-4">
+          <div><label className="label">Company <span className="text-ink-400 font-normal">(optional)</span></label><input className="input h-10" value={f.company_name} onChange={set("company_name")} /></div>
+          <div><label className="label">Job title <span className="text-ink-400 font-normal">(optional)</span></label><input className="input h-10" value={f.title} onChange={set("title")} /></div>
+        </div>
+        <button type="submit" className="hidden" />
+      </form>
     </Modal>
   );
 }
@@ -718,6 +766,7 @@ const tzLabel = (tz: string) => {
 function SettingsTab({ sequence, onChange, section = "all" }: { sequence: SequenceDetail; onChange: () => void; section?: "all" | "schedule" | "settings" }) {
   const ws = useWs();
   const toast = useToast();
+  const qc = useQueryClient();
   const initial = useMemo(() => ({ pauseOnClick: false, pauseOnOpen: false, bounceShield: true, trackOpportunities: true, ...sequence.settings }), [sequence.settings]);
   const [st, setSt] = useState<SequenceSettings>(initial);
   const [priority, setPriority] = useState(sequence.priority);

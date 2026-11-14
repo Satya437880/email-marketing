@@ -381,7 +381,7 @@ export async function sequenceRoutes(app: FastifyInstance) {
         id: sequenceContacts.id, state: sequenceContacts.state, currentStep: sequenceContacts.currentStep, nextStep: sequenceContacts.nextStep,
         nextRunAt: sequenceContacts.nextRunAt, lastError: sequenceContacts.lastError, mailboxId: sequenceContacts.assignedMailboxId,
         sent: eventCount("sent"), opened: eventCount("opened"), clicked: eventCount("clicked"), replied: eventCount("replied"),
-        contact: { id: contacts.id, email: contacts.email, firstName: contacts.firstName, lastName: contacts.lastName, companyName: contacts.companyName },
+        contact: { id: contacts.id, email: contacts.email, firstName: contacts.firstName, lastName: contacts.lastName, companyName: contacts.companyName, title: contacts.title, linkedinUrl: contacts.linkedinUrl },
       }).from(sequenceContacts).innerJoin(contacts, eq(contacts.id, sequenceContacts.contactId)).where(where)
         .orderBy(desc(sequenceContacts.createdAt)).limit(q.pageSize).offset((q.page - 1) * q.pageSize),
       db.select({ n: sql<number>`count(*)::int` }).from(sequenceContacts).innerJoin(contacts, eq(contacts.id, sequenceContacts.contactId)).where(where),

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Search, Tag as TagIcon, Trash2, Upload, User as UserIcon, Users, X } from "lucide-react";
+import { Pencil, Plus, Search, Tag as TagIcon, Trash2, Upload, User as UserIcon, Users, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, type Contact, type Paged, type SequenceRow, type Tag } from "../api";
 import { useWs } from "../App";
@@ -41,6 +41,7 @@ function ContactList({ onImport }: { onImport: () => void }) {
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulk, setBulk] = useState<"tag" | "add_to_sequence" | null>(null);
+  const [editing, setEditing] = useState<Contact | null>(null);
 
   useEffect(() => {
     const t = setTimeout(() => { setSearch(q); setPage(1); }, 300);
@@ -92,7 +93,7 @@ function ContactList({ onImport }: { onImport: () => void }) {
             <thead>
               <tr>
                 <th className="th w-10"><input type="checkbox" checked={allOnPage} onChange={(e) => setSelected((s) => { const n = new Set(s); items.forEach((c) => (e.target.checked ? n.add(c.id) : n.delete(c.id))); return n; })} /></th>
-                <th className="th">Name</th><th className="th">Email</th><th className="th">ESP</th><th className="th">Company</th><th className="th">Title</th><th className="th">Tags</th><th className="th">Last contacted</th>
+                <th className="th">Name</th><th className="th">Email</th><th className="th">ESP</th><th className="th">Company</th><th className="th">Title</th><th className="th">Tags</th><th className="th">Last contacted</th><th className="th text-right">Action</th>
               </tr>
             </thead>
             <tbody>
@@ -106,6 +107,7 @@ function ContactList({ onImport }: { onImport: () => void }) {
                   <td className="td text-ink-600 max-w-[180px] truncate">{c.title || "—"}</td>
                   <td className="td"><div className="flex flex-wrap gap-1">{c.tags.map((t) => <span key={t.id} className="chip bg-brand-50 text-brand-700">{t.name}</span>)}</div></td>
                   <td className="td text-ink-500">{fmtDate(c.lastContactedAt)}</td>
+                  <td className="td text-right"><button className="btn-ghost btn-sm" title="Edit contact" aria-label={`Edit ${c.email}`} onClick={() => setEditing(c)}><Pencil size={14} /> Edit</button></td>
                 </tr>
               ))}
             </tbody>
@@ -113,6 +115,7 @@ function ContactList({ onImport }: { onImport: () => void }) {
           <Pager page={page} pageSize={20} total={list.data?.total ?? 0} onPage={setPage} />
         </div>
       )}
+      {editing && <EditContactModal contact={editing} onClose={() => setEditing(null)} />}
       {bulk && <BulkModal action={bulk} ids={[...selected]} onClose={() => setBulk(null)} onDone={() => {
         setSelected(new Set());
         for (const key of ["contacts", "tags", "sequences", "sequence", "seq-contacts"]) qc.invalidateQueries({ queryKey: [key, ws] });
@@ -304,6 +307,67 @@ export function ImportModal({ onClose, onBack, sequenceId, source = "csv" }: { o
           <div><label className="label">Tag these contacts</label><input className="input" value={newTag} onChange={(e) => setNewTag(e.target.value)} /></div>
         </div>
       )}
+    </Modal>
+  );
+}
+
+export interface EditableContact { id: string; email: string; firstName: string; lastName: string; companyName: string; title?: string; linkedinUrl?: string; variables?: Record<string, string> }
+
+// Change a contact's details. The email address stays fixed (it identifies the contact and its history).
+export function EditContactModal({ contact, onClose }: { contact: EditableContact; onClose: () => void }) {
+  const ws = useWs();
+  const qc = useQueryClient();
+  const toast = useToast();
+  const [f, setF] = useState({ firstName: contact.firstName, lastName: contact.lastName, companyName: contact.companyName, title: contact.title ?? "", linkedinUrl: contact.linkedinUrl ?? "" });
+  const [vars, setVars] = useState<{ key: string; value: string }[]>(Object.entries(contact.variables ?? {}).map(([key, value]) => ({ key, value })));
+  const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF((x) => ({ ...x, [k]: e.target.value }));
+  const save = useMutation({
+    mutationFn: () => api(`/v1/workspaces/${ws}/contacts/${contact.id}`, {
+      method: "PATCH",
+      body: {
+        ...Object.fromEntries(Object.entries(f).map(([k, v]) => [k, v.trim()])),
+        ...(contact.variables ? { variables: Object.fromEntries(vars.filter((v) => v.key.trim() && v.value.trim()).map((v) => [v.key.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_"), v.value.trim()])) } : {}),
+      },
+    }),
+    onSuccess: () => {
+      toast("Contact updated");
+      for (const k of ["contacts", "seq-contacts", "sequence", "sequences"]) void qc.invalidateQueries({ queryKey: [k, ws] });
+      onClose();
+    },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+  return (
+    <Modal open onClose={onClose} title="Edit contact" icon={<UserIcon size={20} />} footer={
+      <div className="grid grid-cols-2 gap-3 w-full">
+        <button className="btn-secondary h-11" onClick={onClose}>Cancel</button>
+        <button className="btn-primary h-11" disabled={save.isPending} onClick={() => save.mutate()}>{save.isPending ? "Saving…" : "Save changes"}</button>
+      </div>
+    }>
+      <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
+        <div className="grid sm:grid-cols-2 gap-4">
+          <div><label className="label">First name</label><input className="input h-10" value={f.firstName} onChange={set("firstName")} autoFocus /></div>
+          <div><label className="label">Last name</label><input className="input h-10" value={f.lastName} onChange={set("lastName")} /></div>
+        </div>
+        <div><label className="label">Email</label><input className="input h-10 bg-ink-100 text-ink-500" value={contact.email} readOnly aria-readonly title="The email address can't be changed" /></div>
+        <div className="grid sm:grid-cols-2 gap-4">
+          <div><label className="label">Company</label><input className="input h-10" value={f.companyName} onChange={set("companyName")} /></div>
+          <div><label className="label">Job title</label><input className="input h-10" value={f.title} onChange={set("title")} /></div>
+        </div>
+        <div><label className="label">LinkedIn URL</label><input className="input h-10" value={f.linkedinUrl} onChange={set("linkedinUrl")} /></div>
+        {contact.variables && (
+          <div className="space-y-2">
+            {vars.map((v, i) => (
+              <div key={i} className="flex gap-2">
+                <input className="input h-10 w-40" placeholder="Variable name" value={v.key} onChange={(e) => setVars((x) => x.map((y, j) => (j === i ? { ...y, key: e.target.value } : y)))} />
+                <input className="input h-10 flex-1" placeholder="Value" value={v.value} onChange={(e) => setVars((x) => x.map((y, j) => (j === i ? { ...y, value: e.target.value } : y)))} />
+                <button type="button" className="btn-ghost" aria-label="Remove variable" onClick={() => setVars((x) => x.filter((_, j) => j !== i))}><Trash2 size={15} /></button>
+              </div>
+            ))}
+            <button type="button" className="flex items-center gap-2 text-sm font-medium text-brand-700 px-1" onClick={() => setVars((x) => [...x, { key: "", value: "" }])}><Plus size={16} /> Add custom variable</button>
+          </div>
+        )}
+        <button type="submit" className="hidden" />
+      </form>
     </Modal>
   );
 }
