@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { useWs } from "../App";
-import { cx, Empty, fmtDate, PageHeader, Pager, Spinner, Tab, useToast } from "../ui";
+import { cx, Empty, fmtDate, fmtInZone, PageHeader, Pager, Spinner, Tab, useDebounced, useToast } from "../ui";
 
 interface EmailItem {
   id: string;
@@ -26,30 +26,6 @@ interface EmailItem {
 interface EmailList { items: EmailItem[]; total: number; scheduled: number }
 
 const PAGE_SIZE = 50;
-
-const ZONE_ABBR: Record<string, string> = { "Asia/Calcutta": "IST", "Asia/Kolkata": "IST", UTC: "UTC", "Etc/UTC": "UTC", "Europe/London": "UK time" };
-// "Sat 14 Nov, 10:05 AM IST": the time in the sequence's own zone, with the zone's name.
-function inZone(iso: string, tz: string): string {
-  const parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit", timeZoneName: "short" }).formatToParts(new Date(iso));
-  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
-  const zone = ZONE_ABBR[tz] ?? get("timeZoneName");
-  return `${get("weekday")} ${get("day")} ${get("month")}, ${get("hour")}:${get("minute")} ${get("dayPeriod")} ${zone}`;
-}
-const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-
-function SendTime({ m }: { m: EmailItem }) {
-  if (!m.at) return <>—</>;
-  if (m.kind !== "scheduled" || !m.timezone) return <div>{fmtDate(m.at, true)}</div>;
-  let main: string;
-  try { main = inZone(m.at, m.timezone); } catch { return <div>{fmtDate(m.at, true)}</div>; }
-  const mine = m.timezone !== localZone ? inZone(m.at, localZone) : null;
-  return (
-    <>
-      <div>{main}</div>
-      {mine && <div className="text-xs text-ink-500">Your time: {mine}</div>}
-    </>
-  );
-}
 const STATUS_STYLE: Record<EmailItem["status"], string> = {
   scheduled: "bg-sky-50 text-sky-700",
   paused: "bg-amber-50 text-amber-700",
@@ -57,12 +33,18 @@ const STATUS_STYLE: Record<EmailItem["status"], string> = {
 };
 const STATUS_LABEL: Record<EmailItem["status"], string> = { scheduled: "Scheduled", paused: "Paused", sent: "Sent" };
 
+function SendTime({ m }: { m: EmailItem }) {
+  // Scheduled emails always show in their sequence's time zone, whatever zone this computer is set to.
+  return <div>{m.kind === "scheduled" && m.timezone ? fmtInZone(m.at, m.timezone) : fmtDate(m.at, true)}</div>;
+}
+
 export function EmailsPage() {
   const ws = useWs();
   const toast = useToast();
   const qc = useQueryClient();
   const [tab, setTab] = useState<"all" | "scheduled" | "sent">("all");
-  const [search, setSearch] = useState("");
+  const [typed, setTyped] = useState("");
+  const search = useDebounced(typed);
   const [page, setPage] = useState(1);
 
   const list = useQuery({
@@ -91,7 +73,7 @@ export function EmailsPage() {
       <div className="px-4 md:px-8 py-4">
         <div className="relative max-w-sm mb-4">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-400" />
-          <input className="input pl-9" placeholder="Search emails" aria-label="Search emails" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
+          <input className="input pl-9" placeholder="Search emails" aria-label="Search emails" value={typed} onChange={(e) => { setTyped(e.target.value); setPage(1); }} />
         </div>
 
         <div className="card overflow-x-auto">

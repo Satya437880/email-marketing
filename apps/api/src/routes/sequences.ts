@@ -1,4 +1,4 @@
-import { addContactsToSequence, contactVariables, launchSequence, LaunchError, connectionFor, renderSignature, rescheduleWaitingEmails, setSequenceStatus } from "@outreach/core";
+import { addContactsToSequence, contactVariables, launchSequence, LaunchError, connectionFor, renderSignature, rescheduleWaitingEmails } from "@outreach/core";
 import {
   contacts, db, DEFAULT_SEQUENCE_SETTINGS, labels, mailboxes, products, senderProfileMailboxes, senderProfiles, sequenceContacts, sequences, sequenceSenders, sequenceSteps, stepVariants,
   type SequenceSettings,
@@ -319,18 +319,6 @@ export async function sequenceRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
-  app.post("/v1/workspaces/:ws/sequences/:id/pause", async (req) => {
-    const p = params(req, idParams);
-    await setSequenceStatus(wsId(req), p.id, "paused");
-    return { ok: true };
-  });
-
-  app.post("/v1/workspaces/:ws/sequences/:id/resume", async (req) => {
-    const p = params(req, idParams);
-    await setSequenceStatus(wsId(req), p.id, "active");
-    return { ok: true };
-  });
-
   app.post("/v1/workspaces/:ws/sequences/:id/duplicate", async (req) => {
     const p = params(req, idParams);
     const seq = await owned(wsId(req), p.id);
@@ -421,9 +409,13 @@ export async function sequenceRoutes(app: FastifyInstance) {
     const p = params(req, idParams);
     const b = body(req, z.object({ ids: z.array(z.string().uuid()).min(1) }));
     await owned(wsId(req), p.id);
-    await db.update(sequenceContacts).set({ state: "finished", nextRunAt: null, lastError: "removed" })
-      .where(and(eq(sequenceContacts.sequenceId, p.id), inArray(sequenceContacts.id, b.ids), inArray(sequenceContacts.state, [...OPEN])));
-    return { ok: true };
+    // The contact leaves the sequence completely (and can be added again later). Emails already sent stay in the history and stats.
+    // One that is being sent at this very moment is skipped.
+    const gone = await db.delete(sequenceContacts)
+      .where(and(eq(sequenceContacts.sequenceId, p.id), inArray(sequenceContacts.id, b.ids), sql`${sequenceContacts.state} <> 'sending'`))
+      .returning({ id: sequenceContacts.id });
+    if (!gone.length) throw new HttpError(409, "sending_now", "That contact is being emailed right now. Try again in a minute.");
+    return { ok: true, removed: gone.length };
   });
 
   // Out-of-office contacts are waiting for a return date; this sends to them now instead.

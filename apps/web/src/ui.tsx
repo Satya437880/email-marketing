@@ -261,6 +261,30 @@ export function fmtDate(d: string | null | undefined, withTime = false) {
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric", ...(withTime ? { hour: "numeric", minute: "2-digit" } : {}) });
 }
 
+const ZONE_ABBR: Record<string, string> = { "Asia/Calcutta": "IST", "Asia/Kolkata": "IST", UTC: "UTC", "Etc/UTC": "UTC" };
+// "Sat 14 Nov, 10:05 AM IST": a moment shown in the given IANA time zone (the sequence's), never the browser's.
+export function fmtInZone(iso: string | null | undefined, tz: string | null | undefined): string {
+  if (!iso) return "—";
+  if (!tz) return fmtDate(iso, true);
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit", timeZoneName: "short" }).formatToParts(new Date(iso));
+    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+    return `${get("weekday")} ${get("day")} ${get("month")}, ${get("hour")}:${get("minute")} ${get("dayPeriod")} ${ZONE_ABBR[tz] ?? get("timeZoneName")}`;
+  } catch {
+    return fmtDate(iso, true);
+  }
+}
+
+// A value that follows `value` after a short pause, so typing in a search box does not fire a request per key.
+export function useDebounced<T>(value: T, ms = 300): T {
+  const [v, setV] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setV(value), ms);
+    return () => clearTimeout(t);
+  }, [value, ms]);
+  return v;
+}
+
 export function pct(n: number) {
   return `${(n * 100).toFixed(1)}%`;
 }

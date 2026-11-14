@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, type Contact, type Mailbox, type Paged, type SenderProfile, type SequenceDetail, type SequenceSettings, type Step, type Tag } from "../api";
 import { useWs } from "../App";
-import { cx, Empty, fmtDate, Modal, Pager, SafeHtml, Spinner, StatusPill, Toggle, useToast } from "../ui";
+import { cx, Empty, fmtDate, fmtInZone, Modal, Pager, SafeHtml, Spinner, StatusPill, Toggle, useToast } from "../ui";
 import { EditContactModal, ImportModal, type EditableContact } from "./Contacts";
 import { SequenceOverview } from "./SequenceOverview";
 import { StepBuilder } from "../StepBuilder";
@@ -34,6 +34,7 @@ function SequenceEditor() {
   const [steps, setSteps] = useState<Step[]>([]);
   const [dirty, setDirty] = useState(false);
   const settingsSave = useRef<SaveSettings | null>(null);
+  const [settingsDirty, setSettingsDirty] = useState(false);
 
   useEffect(() => {
     if (seq.data && !dirty) {
@@ -42,6 +43,14 @@ function SequenceEditor() {
   }, [seq.data, dirty]);
 
   const refresh = () => qc.invalidateQueries({ queryKey: ["sequence", ws, id] });
+
+  // Warn before closing the tab or reloading with unsaved changes.
+  useEffect(() => {
+    if (!dirty && !settingsDirty) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty, settingsDirty]);
 
   const saveSteps = useMutation({
     mutationFn: () => api(`/v1/workspaces/${ws}/sequences/${id}/steps`, {
@@ -52,13 +61,19 @@ function SequenceEditor() {
     onError: (e: Error) => toast(e.message, "error"),
   });
   const action = useMutation({
-    mutationFn: (a: "launch" | "pause" | "resume") => api(`/v1/workspaces/${ws}/sequences/${id}/${a}`, { body: {} }),
-    onSuccess: (_, a) => { toast(a === "launch" ? "Sequence launched — sending starts in the next send window" : `Sequence ${a}d`); refresh(); },
+    mutationFn: (a: "launch") => api(`/v1/workspaces/${ws}/sequences/${id}/${a}`, { body: {} }),
+    onSuccess: (_, a) => { toast("Sequence launched — sending starts in the next send window"); refresh(); },
     onError: (e: Error) => toast(e.message, "error"),
   });
 
   if (seq.isLoading || !seq.data) return <Spinner />;
   const s = seq.data;
+  // One button saves whatever changed: the steps, and/or the Schedule and Settings.
+  const updateSequence = async () => {
+    if (dirty) saveSteps.mutate();
+    if (settingsDirty && settingsSave.current) await settingsSave.current();
+  };
+  const updateButton = <button className="btn-primary h-10" onClick={() => void updateSequence()} disabled={saveSteps.isPending}>Update sequence</button>;
   // Leaving the Schedule or Settings screen saves any unsaved changes first.
   const go = async (n: number) => {
     if ((step === 3 || step === 4) && settingsSave.current && !(await settingsSave.current())) return;
@@ -74,10 +89,8 @@ function SequenceEditor() {
           <span className="hidden sm:inline text-sm text-ink-500 truncate max-w-[260px]">{s.name}</span>
           <StatusPill status={s.status} />
           <div className="flex flex-wrap gap-2">
-            {dirty && <button className="btn-secondary" onClick={() => saveSteps.mutate()} disabled={saveSteps.isPending}><Save size={15} /> Save changes</button>}
-            {s.status === "draft" && <button className="btn-primary" disabled={dirty || action.isPending} title={dirty ? "Save first" : undefined} onClick={() => action.mutate("launch")}><Rocket size={15} /> Launch</button>}
-            {s.status === "active" && <button className="btn-secondary" onClick={() => action.mutate("pause")}>Pause</button>}
-            {s.status === "paused" && <button className="btn-primary" onClick={() => action.mutate("resume")}>Resume</button>}
+            {(dirty || settingsDirty) && <button className="btn-primary h-10" onClick={() => void updateSequence()} disabled={saveSteps.isPending}>Update sequence</button>}
+            {s.status === "draft" && <button className="btn-primary" disabled={dirty || action.isPending} title={dirty ? "Save first" : undefined} onClick={() => { if (confirm(`Launch "${s.name}"? Emails start going out in its next sending window to the ${s.contactCount.toLocaleString()} contact${s.contactCount === 1 ? "" : "s"} in it.`)) action.mutate("launch"); }}><Rocket size={15} /> Launch</button>}
           </div>
         </div>
         <Stepper step={step} onStep={(n) => void go(n)} />
@@ -90,15 +103,15 @@ function SequenceEditor() {
           <div className="mt-6"><ContactsTab sequenceId={s.id} onChange={refresh} /></div>
         </>}
         {step === 2 && <StepHeader title="Sequence steps" help="Add emails and the waits between them. Add variants to A/B test." text="Draft your sequence by adding steps and customizing them"
-          actions={dirty ? <button className="btn-primary h-10" onClick={() => saveSteps.mutate()} disabled={saveSteps.isPending}>Update sequence</button> : undefined} />}
+          actions={dirty ? updateButton : undefined} />}
         {step === 2 && <div className="mt-6"><StepBuilder steps={steps} onChange={(next) => { setSteps(next); setDirty(true); }} /></div>}
 
         {(step === 3 || step === 4) && <>
           {step === 3
-            ? <StepHeader title="Schedule" help="The days and hours emails may be sent, in the time zone below." text="Activate the days on which emails should be sent out." />
-            : <StepHeader title="Settings" help="Rotation, priorities and deliverability rules." text="Choose the mailboxes that send this sequence and how it behaves." />}
+            ? <StepHeader title="Schedule" help="The days and hours emails may be sent, in the time zone below." text="Activate the days on which emails should be sent out." actions={settingsDirty ? updateButton : undefined} />
+            : <StepHeader title="Settings" help="Rotation, priorities and deliverability rules." text="Choose the mailboxes that send this sequence and how it behaves." actions={settingsDirty ? updateButton : undefined} />}
           {step === 4 && <section className="pt-6"><h3 className="text-sm font-semibold mb-3">Rotation</h3><SendersTab sequence={s} onChange={refresh} /></section>}
-          <SettingsTab sequence={s} onChange={refresh} section={step === 3 ? "schedule" : "settings"} registerSave={(fn) => { settingsSave.current = fn; }} />
+          <SettingsTab sequence={s} onChange={refresh} section={step === 3 ? "schedule" : "settings"} registerSave={(fn) => { settingsSave.current = fn; }} onDirty={setSettingsDirty} />
         </>}
 
         <div className="flex items-center justify-between pt-8 mt-4 border-t border-ink-200">
@@ -127,6 +140,8 @@ export function ContactsTab({ sequenceId, onChange }: { sequenceId: string; onCh
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<EditableContact | null>(null);
+  // Times are shown in the sequence's own time zone, not this computer's.
+  const tz = useQuery({ queryKey: ["sequence", ws, sequenceId], queryFn: () => api<SequenceDetail>(`/v1/workspaces/${ws}/sequences/${sequenceId}`) }).data?.settings.schedule.timezone;
 
   // Wait for a pause in typing before searching.
   useEffect(() => {
@@ -171,8 +186,8 @@ export function ContactsTab({ sequenceId, onChange }: { sequenceId: string; onCh
     onError: (e: Error) => toast(e.message, "error"),
   });
   const remove = useMutation({
-    mutationFn: (ids: string[]) => api(`${base}/remove`, { body: { ids } }),
-    onSuccess: () => { toast("Removed from this sequence"); refresh(); },
+    mutationFn: (ids: string[]) => api<{ removed: number }>(`${base}/remove`, { body: { ids } }),
+    onSuccess: (r) => { toast(`Removed ${r.removed} contact${r.removed === 1 ? "" : "s"} from this sequence`); setSelected(new Set()); refresh(); },
     onError: (e: Error) => toast(e.message, "error"),
   });
   const togglePage = () => setSelected(allPicked ? new Set() : new Set(rows.map((r) => r.id)));
@@ -259,8 +274,8 @@ export function ContactsTab({ sequenceId, onChange }: { sequenceId: string; onCh
                       <div><div className="font-medium text-ink-800">{`${r.contact.firstName} ${r.contact.lastName}`.trim() || "—"}</div><div className="text-xs text-ink-500">{r.contact.email}{r.contact.companyName ? ` · ${r.contact.companyName}` : ""}</div></div>
                     </div>
                   </td>
-                  <td className="td border-r"><StatusPill status={r.state === "error" ? "interrupted" : r.state} />{r.lastError && <div className="text-xs text-ink-400 mt-0.5">{r.lastError.replace(/_/g, " ")}</div>}</td>
-                  <td className="td text-center text-ink-500 whitespace-nowrap">{fmtDate(r.nextRunAt, true)}</td>
+                  <td className="td border-r"><StatusPill status={r.state === "error" ? "interrupted" : r.state} />{r.lastError && <div className="text-xs text-ink-400 mt-0.5">{WAIT_REASONS[r.lastError] ?? r.lastError.replace(/_/g, " ")}</div>}</td>
+                  <td className="td text-center text-ink-500 whitespace-nowrap">{fmtInZone(r.nextRunAt, tz)}</td>
                   <td className="td text-center">{num(r.sent)}</td>
                   <td className="td text-center">{num(r.opened)}</td>
                   <td className="td text-center">{num(r.clicked)}</td>
@@ -269,7 +284,7 @@ export function ContactsTab({ sequenceId, onChange }: { sequenceId: string; onCh
                     <button className="btn-ghost btn-sm" onClick={() => setEditing(r.contact)} title="Edit contact" aria-label={`Edit ${r.contact.email}`}><Pencil size={14} /></button>
                     {r.state === "ooo" && <button className="btn-ghost btn-sm" onClick={() => resumeOoo.mutate([r.id])}>Resume</button>}
                     {r.state === "error" && <button className="btn-ghost btn-sm" onClick={() => retry.mutate([r.id])}>Retry</button>}
-                    {["queued", "active", "sending", "ooo"].includes(r.state) && <button className="btn-ghost btn-sm text-red-700" onClick={() => remove.mutate([r.id])} title="Remove from this sequence"><Trash2 size={14} /></button>}
+                    {r.state !== "sending" && <button className="btn-ghost btn-sm text-red-700" onClick={() => remove.mutate([r.id])} title="Remove from this sequence"><Trash2 size={14} /></button>}
                   </td>
                 </tr>
               ))}
@@ -703,6 +718,16 @@ function OptionCard({ icon, title, text, checked, onChange, badge, children }: {
 
 
 const WEEK = [1, 2, 3, 4, 5, 6, 0];
+// Why an active contact is waiting. These are normal pauses, not errors.
+const WAIT_REASONS: Record<string, string> = {
+  outside_window: "Waiting for the next sending window",
+  throttled: "Waiting for the gap between emails",
+  no_capacity: "Mailbox daily limit reached, trying again later",
+  sticky_at_capacity: "Mailbox daily limit reached, trying again later",
+  sticky_unavailable: "Waiting for the original mailbox",
+  company_sequential: "Waiting for another contact at this company",
+};
+
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const pad2 = (n: number) => String(n).padStart(2, "0");
 const hourOf = (hhmm: string) => (hhmm === "23:59" ? 24 : Number(hhmm.slice(0, 2)));
@@ -771,7 +796,7 @@ const tzLabel = (tz: string) => {
 
 type SaveSettings = () => Promise<boolean>;
 
-function SettingsTab({ sequence, onChange, section = "all", registerSave }: { sequence: SequenceDetail; onChange: () => void; section?: "all" | "schedule" | "settings"; registerSave?: (fn: SaveSettings | null) => void }) {
+function SettingsTab({ sequence, onChange, section = "all", registerSave, onDirty }: { sequence: SequenceDetail; onChange: () => void; section?: "all" | "schedule" | "settings"; registerSave?: (fn: SaveSettings | null) => void; onDirty?: (dirty: boolean) => void }) {
   const ws = useWs();
   const toast = useToast();
   const qc = useQueryClient();
@@ -795,6 +820,7 @@ function SettingsTab({ sequence, onChange, section = "all", registerSave }: { se
     onSuccess: () => { toast("Settings saved"); onChange(); void qc.invalidateQueries({ queryKey: ["emails", ws] }); void qc.invalidateQueries({ queryKey: ["seq-contacts", ws] }); },
     onError: (e: Error) => toast(e.message, "error"),
   });
+  useEffect(() => { onDirty?.(dirty); return () => onDirty?.(false); }, [dirty]); // eslint-disable-line react-hooks/exhaustive-deps
   // Next / Back / the step tabs call this first, so the timezone, days and hours are never lost when leaving the screen.
   useEffect(() => {
     registerSave?.(async () => {
@@ -882,7 +908,7 @@ function SettingsTab({ sequence, onChange, section = "all", registerSave }: { se
       {dirty && (
         <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-30 card flex items-center gap-3 px-4 py-2.5 shadow-lg">
           <span className="text-sm">You have unsaved changes</span>
-          <button className="btn-primary" onClick={() => save.mutate()} disabled={save.isPending || scheduleInvalid(st.schedule)}>{save.isPending ? "Saving…" : "Save settings"}</button>
+          <button className="btn-primary" onClick={() => save.mutate()} disabled={save.isPending || scheduleInvalid(st.schedule)}>{save.isPending ? "Saving…" : "Update sequence"}</button>
         </div>
       )}
     </div>

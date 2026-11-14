@@ -323,10 +323,11 @@ export function EmailEditor({ stepName, onStepName, subject, onSubject, bodyHtml
   const toast = useToast();
   const qc = useQueryClient();
   const subjectRef = useRef<HTMLInputElement>(null);
-  // Always opens as a normal draft with an editable subject; "Reply in same thread" is only on when picked from Type.
-  const [threadMode, setThreadMode] = useState<"new" | "reply">("new");
+  // A follow-up with no subject is sent as a reply in the same thread, so that is what the Type box shows for it.
+  // Pick "New thread" to give it its own subject instead.
+  const [threadMode, setThreadMode] = useState<"new" | "reply">(canReply && !subject.trim() ? "reply" : "new");
   useEffect(() => {
-    setThreadMode("new");
+    setThreadMode(canReply && !subject.trim() ? "reply" : "new");
     // Only when a different step or test is opened, not on every keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editorKey, canReply]);

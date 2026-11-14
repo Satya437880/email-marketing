@@ -33,14 +33,17 @@ export async function addContactsToSequence(workspaceId: string, sequenceId: str
 
 // After the Schedule tab changes, every email of this sequence that is still waiting is placed again in the new timezone, days and hours.
 export async function rescheduleWaitingEmails(sequenceId: string, schedule: SendSchedule, now = new Date()): Promise<number> {
-  const rows = await db.select({ id: sequenceContacts.id, state: sequenceContacts.state, dueAt: sequenceContacts.dueAt, nextRunAt: sequenceContacts.nextRunAt }).from(sequenceContacts)
+  const rows = await db.select({ id: sequenceContacts.id, state: sequenceContacts.state, dueAt: sequenceContacts.dueAt, nextRunAt: sequenceContacts.nextRunAt, lastError: sequenceContacts.lastError }).from(sequenceContacts)
     .where(and(eq(sequenceContacts.sequenceId, sequenceId), inArray(sequenceContacts.state, ["active", "ooo"]), sql`${sequenceContacts.nextRunAt} is not null`, sql`${sequenceContacts.nextStep} is not null`));
-  const placed = recalculateDue(rows.map((r) => ({ dueAt: r.dueAt ?? r.nextRunAt! })), schedule, now);
+  const placed = recalculateDue(rows.map((r) => ({
+    // Rows from before due_at existed: one that was pushed back for being outside the window was already due, so it is due now.
+    dueAt: r.dueAt ?? (r.lastError === "outside_window" ? now : r.nextRunAt!),
+  })), schedule, now);
   let changed = 0;
   for (const [i, r] of rows.entries()) {
     const at = placed[i]!;
     if (r.nextRunAt && r.nextRunAt.getTime() === at.getTime()) continue;
-    await db.update(sequenceContacts).set({ nextRunAt: at, lastError: null }).where(and(eq(sequenceContacts.id, r.id), inArray(sequenceContacts.state, ["active", "ooo"])));
+    await db.update(sequenceContacts).set({ nextRunAt: at, dueAt: r.dueAt ?? at, lastError: null }).where(and(eq(sequenceContacts.id, r.id), inArray(sequenceContacts.state, ["active", "ooo"])));
     changed++;
   }
   return changed;
@@ -74,7 +77,3 @@ export async function launchSequence(workspaceId: string, sequenceId: string): P
   });
 }
 
-export async function setSequenceStatus(workspaceId: string, sequenceId: string, status: "active" | "paused"): Promise<void> {
-  await db.update(sequences).set({ status })
-    .where(and(eq(sequences.id, sequenceId), eq(sequences.workspaceId, workspaceId), inArray(sequences.status, status === "active" ? ["paused"] : ["active"])));
-}

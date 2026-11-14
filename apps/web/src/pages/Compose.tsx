@@ -5,7 +5,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { api, type Attachment, type Contact, type Mailbox, type Paged, type SequenceRow, type Tag } from "../api";
 import { useWs } from "../App";
 import { EmailEditor } from "../EmailEditor";
-import { Empty, PageHeader, Spinner, useToast } from "../ui";
+import { Empty, PageHeader, Spinner, useDebounced, useToast } from "../ui";
 
 const MAX_RECIPIENTS = 25;
 
@@ -18,7 +18,8 @@ export function ComposePage() {
   const qc = useQueryClient();
   const nav = useNavigate();
 
-  const [search, setSearch] = useState("");
+  const [typed, setTyped] = useState("");
+  const search = useDebounced(typed);
   const [tagId, setTagId] = useState("");
   const [sequenceId, setSequenceId] = useState("");
   const [esp, setEsp] = useState("");
@@ -84,6 +85,8 @@ export function ComposePage() {
 
   const ready = count > 0 && !!mailboxId && subject.trim() && bodyHtml.replace(/<[^>]+>/g, "").trim();
   const mailbox = active.find((m) => m.id === mailboxId);
+  // Say exactly what is still missing instead of leaving Send greyed out with no explanation.
+  const missing = [!count && "choose at least one recipient", !mailboxId && "pick a mailbox to send from", !subject.trim() && "add a subject", !bodyHtml.replace(/<[^>]+>/g, "").trim() && "write your email"].filter(Boolean) as string[];
 
   if (results) {
     const sent = results.filter((r) => r.status === "sent").length;
@@ -128,7 +131,7 @@ export function ComposePage() {
           <div className="mt-3 flex flex-wrap gap-2">
             <div className="relative flex-1 min-w-[14rem] max-w-sm">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-400" />
-              <input className="input pl-9" placeholder="Search name, email or company" aria-label="Search contacts" value={search} onChange={(e) => setSearch(e.target.value)} />
+              <input className="input pl-9" placeholder="Search name, email or company" aria-label="Search contacts" value={typed} onChange={(e) => setTyped(e.target.value)} />
             </div>
             <select className="input w-auto" aria-label="Tag" value={tagId} onChange={(e) => setTagId(e.target.value)}>
               <option value="">All tags</option>
@@ -207,7 +210,7 @@ export function ComposePage() {
           <button className="btn-primary h-11 px-6" disabled={!ready || send.isPending} onClick={() => { if (confirm(`Send this email to ${count} contact${count === 1 ? "" : "s"} from ${mailbox?.email}?`)) send.mutate(); }}>
             <Send size={16} /> {send.isPending ? "Sending…" : `Send to ${count || "…"} contact${count === 1 ? "" : "s"}`}
           </button>
-          <p className="text-xs text-ink-500">Sent now from the chosen mailbox. Unsubscribed, do-not-contact and invalid addresses are skipped, and the mailbox's daily limit applies.</p>
+          <p className="text-xs text-ink-500">{missing.length ? `Before you can send: ${missing.join(", ")}. ` : ""}Sent now from the chosen mailbox. Unsubscribed, do-not-contact and invalid addresses are skipped, and the mailbox's daily limit applies.</p>
         </div>
       </div>
     </div>

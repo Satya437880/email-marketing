@@ -127,6 +127,13 @@
       "when": 1794631341868,
       "tag": "0017_daily_spectrum",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1794648467685,
+      "tag": "0018_sequences_no_pause",
+      "breakpoints": true
     }
   ]
 }

@@ -37,7 +37,9 @@ function Radio({ checked, onChange }: { checked: boolean; onChange: () => void }
 function StartDelay({ minutes, onSave, followUp = false }: { minutes: number; onSave: (minutes: number) => void; followUp?: boolean }) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"now" | "after">("now");
-  const [value, setValue] = useState(10);
+  // The box holds text so it can be cleared and retyped; leading zeros are stripped as you type.
+  const [text, setText] = useState("10");
+  const value = text === "" ? 0 : Number(text);
   const [unit, setUnit] = useState<(typeof UNITS)[number]["k"]>("minutes");
   const ref = useRef<HTMLDivElement>(null);
 
@@ -51,12 +53,12 @@ function StartDelay({ minutes, onSave, followUp = false }: { minutes: number; on
   const openIt = () => {
     const s = splitWait(minutes);
     setMode(minutes > 0 ? "after" : "now");
-    setValue(s.value);
+    setText(String(s.value));
     setUnit(s.unit);
     setOpen(true);
   };
   const factor = UNITS.find((u) => u.k === unit)!.f;
-  const total = Math.min(MAX_MINUTES, Math.max(1, Math.round(value)) * factor);
+  const total = Math.min(MAX_MINUTES, Math.max(0, Math.round(value)) * factor);
   const save = () => { onSave(mode === "now" ? 0 : total); setOpen(false); };
 
   return (
@@ -78,11 +80,12 @@ function StartDelay({ minutes, onSave, followUp = false }: { minutes: number; on
                 Execute step after
               </label>
               <div className="relative">
-                <input type="number" min={1} aria-label="Wait amount" className="input !w-24 !h-11 !rounded-xl !text-[16px] pr-8 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" value={value}
-                  onChange={(e) => { setMode("after"); setValue(Math.max(1, Math.min(MAX_MINUTES / factor, Number(e.target.value) || 1))); }} />
+                <input type="text" inputMode="numeric" aria-label="Wait amount" className="input !w-24 !h-11 !rounded-xl !text-[16px] pr-8 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" value={value}
+                  onChange={(e) => { setMode("after"); const t = e.target.value.replace(/\D/g, "").replace(/^0+(?=\d)/, ""); setText(t === "" ? "" : String(Math.min(MAX_MINUTES / factor, Number(t)))); }}
+                  onBlur={() => setText(String(value))} />
                 <div className="absolute right-2 top-1/2 -translate-y-1/2 flex flex-col text-ink-700">
-                  <button type="button" aria-label="Increase" className="h-3.5 grid place-items-center" onClick={() => { setMode("after"); setValue((v) => Math.min(MAX_MINUTES / factor, v + 1)); }}><ChevronUp size={14} /></button>
-                  <button type="button" aria-label="Decrease" className="h-3.5 grid place-items-center" onClick={() => { setMode("after"); setValue((v) => Math.max(1, v - 1)); }}><ChevronDown size={14} /></button>
+                  <button type="button" aria-label="Increase" className="h-3.5 grid place-items-center" onClick={() => { setMode("after"); setText(String(Math.min(MAX_MINUTES / factor, value + 1))); }}><ChevronUp size={14} /></button>
+                  <button type="button" aria-label="Decrease" className="h-3.5 grid place-items-center" onClick={() => { setMode("after"); setText(String(Math.max(0, value - 1))); }}><ChevronDown size={14} /></button>
                 </div>
               </div>
               <div className="relative flex-1 min-w-[7rem]">

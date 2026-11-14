@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, Copy, FileText, GitBranch, HelpCircle, MoreHorizontal, Pause, Play, Plus, Search, Send, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { ArrowRight, Copy, FileText, GitBranch, HelpCircle, MoreHorizontal, Plus, Search, Send, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, type SenderProfile, type SequenceRow } from "../api";
@@ -59,7 +59,7 @@ function SeqFiltersButton({ ws, value, onChange }: { ws: string; value: SeqFilte
           <div>
             <div className="label">Status</div>
             <div className="flex flex-wrap gap-1.5">
-              {["draft", "active", "paused", "completed"].map((s) => (
+              {["draft", "active", "completed"].map((s) => (
                 <button key={s} className={cx("btn-sm btn capitalize", value.status.includes(s) ? "bg-brand-600 text-white" : "bg-ink-100")}
                   onClick={() => onChange({ ...value, status: value.status.includes(s) ? value.status.filter((x) => x !== s) : [...value.status, s] })}>{s}</button>
               ))}
@@ -150,15 +150,14 @@ function SequenceList({ onCreate }: { onCreate: () => void }) {
   const list = useQuery({ queryKey: ["sequences", ws], queryFn: () => api<SequenceRow[]>(`/v1/workspaces/${ws}/sequences`), refetchInterval: 30_000 });
   const refresh = () => qc.invalidateQueries({ queryKey: ["sequences", ws] });
 
-  // Off → on launches a draft or resumes a paused sequence; on → off pauses it.
+  // Switching a draft on launches it. A launched sequence keeps running; there is no pause.
   const toggle = useMutation({
     mutationFn: async (s: SequenceRow) => {
-      const action = s.status === "active" ? "pause" : s.status === "draft" ? "launch" : "resume";
-      await api(`/v1/workspaces/${ws}/sequences/${s.id}/${action}`, { body: {} });
-      return { action, name: s.name };
+      await api(`/v1/workspaces/${ws}/sequences/${s.id}/launch`, { body: {} });
+      return { name: s.name };
     },
-    onSuccess: ({ action, name }) => {
-      toast(action === "launch" ? `"${name}" launched — sending starts in its next send window` : `"${name}" ${action === "pause" ? "paused" : "resumed"}`);
+    onSuccess: ({ name }) => {
+      toast(`"${name}" launched — sending starts in its next send window`);
       refresh();
     },
     onError: (e: Error) => toast(e.message, "error"),
@@ -169,15 +168,14 @@ function SequenceList({ onCreate }: { onCreate: () => void }) {
   });
   const del = useMutation({ mutationFn: (id: string) => api(`/v1/workspaces/${ws}/sequences/${id}`, { method: "DELETE" }), onSuccess: refresh });
   const bulk = useMutation({
-    mutationFn: async (action: "pause" | "resume" | "delete") => {
+    mutationFn: async (action: "delete") => {
       const rows = (list.data ?? []).filter((s) => selected.has(s.id));
       for (const s of rows) {
         if (action === "delete") await api(`/v1/workspaces/${ws}/sequences/${s.id}`, { method: "DELETE" });
-        else if ((action === "pause" && s.status === "active") || (action === "resume" && s.status === "paused")) await api(`/v1/workspaces/${ws}/sequences/${s.id}/${action}`, { body: {} });
       }
       return rows.length;
     },
-    onSuccess: (n, action) => { toast(`${action === "delete" ? "Deleted" : action === "pause" ? "Paused" : "Resumed"} ${n} sequence${n === 1 ? "" : "s"}`); setSelected(new Set()); refresh(); },
+    onSuccess: (n) => { toast(`Deleted ${n} sequence${n === 1 ? "" : "s"}`); setSelected(new Set()); refresh(); },
   });
 
   const rows = (list.data ?? []).filter((s) =>
@@ -203,8 +201,6 @@ function SequenceList({ onCreate }: { onCreate: () => void }) {
       {selected.size > 0 && (
         <div className="flex flex-wrap items-center gap-2 px-4 py-2 bg-brand-50 border-b border-brand-100 text-sm">
           <span className="font-medium text-brand-800">{selected.size} selected</span>
-          <button className="btn-secondary btn-sm" onClick={() => bulk.mutate("pause")}><Pause size={14} /> Pause</button>
-          <button className="btn-secondary btn-sm" onClick={() => bulk.mutate("resume")}><Play size={14} /> Resume</button>
           <button className="btn-secondary btn-sm text-red-600" onClick={() => confirm(`Delete ${selected.size} sequences and their stats?`) && bulk.mutate("delete")}><Trash2 size={14} /> Delete</button>
           <button className="btn-ghost btn-sm ml-auto" onClick={() => setSelected(new Set())}>Clear</button>
         </div>
@@ -242,8 +238,8 @@ function SequenceList({ onCreate }: { onCreate: () => void }) {
                       <span onClick={(e) => e.stopPropagation()}>
                         <Toggle
                           checked={s.status === "active"}
-                          disabled={s.status === "completed" || (toggle.isPending && toggle.variables?.id === s.id)}
-                          title={{ draft: "Draft — switch on to launch", active: "Active — switch off to pause", paused: "Paused — switch on to resume", completed: "Completed" }[s.status]}
+                          disabled={s.status !== "draft" || (toggle.isPending && toggle.variables?.id === s.id)}
+                          title={{ draft: "Draft — switch on to launch", active: "Active", paused: "Active", completed: "Completed" }[s.status]}
                           onChange={() => {
                             if (s.status === "draft" && !confirm(`Launch "${s.name}"? Emails start sending in its next send window.`)) return;
                             toggle.mutate(s);
