@@ -65,6 +65,19 @@ export const users = pgTable("users", {
   createdAt: createdAt(),
 });
 
+// A sign-up waiting for its emailed code. The account is only created once the code is entered, so fake addresses never become users.
+export const pendingSignups = pgTable("pending_signups", {
+  email: text("email").primaryKey(),
+  name: text("name").notNull(),
+  company: text("company"),
+  passwordHash: text("password_hash").notNull(),
+  codeHash: text("code_hash").notNull(),
+  attempts: integer("attempts").notNull().default(0),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  lastSentAt: timestamp("last_sent_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: createdAt(),
+});
+
 export const memberships = pgTable("memberships", {
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   workspaceId: ws(),

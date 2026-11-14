@@ -1,8 +1,9 @@
 import { seedWorkspace } from "@outreach/core";
-import { db, memberships, organizations, users, workspaces } from "@outreach/db";
+import { db, memberships, organizations, pendingSignups, users, workspaces } from "@outreach/db";
+import { sendSystemEmail, systemMailConfigured } from "@outreach/mail";
 import { eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { createSession, destroySession, hashPassword, requireUser, verifyPassword } from "../auth";
 import { body, HttpError } from "../http";
@@ -25,7 +26,43 @@ export async function createWorkspace(userId: string, name: string, orgId?: stri
 }
 
 export async function authRoutes(app: FastifyInstance) {
-  app.post("/v1/auth/signup", async (req, reply) => {
+  const CODE_TTL_MS = 10 * 60 * 1000;
+  const RESEND_GAP_MS = 30 * 1000;
+  const MAX_ATTEMPTS = 5;
+  const hashCode = (email: string, code: string) => createHash("sha256").update(`${process.env.SESSION_SECRET ?? ""}:${email}:${code}`).digest("hex");
+
+  // Emails a fresh 6-digit code for a pending sign-up.
+  async function sendCode(email: string, name: string) {
+    if (!systemMailConfigured() && process.env.NODE_ENV === "production") {
+      throw new HttpError(503, "email_not_configured", "Sign-up email is not set up yet. Ask the admin to set SYSTEM_SMTP_URL.");
+    }
+    const code = String(randomInt(100000, 1000000));
+    const now = new Date();
+    await db.update(pendingSignups).set({ codeHash: hashCode(email, code), attempts: 0, expiresAt: new Date(now.getTime() + CODE_TTL_MS), lastSentAt: now }).where(eq(pendingSignups.email, email));
+    if (!systemMailConfigured()) {
+      // Local development only: no mail server is set, so the code is printed in the API log.
+      app.log.warn(`[dev] sign-up code for ${email}: ${code}`);
+      return;
+    }
+    try {
+      await sendSystemEmail({
+        to: email,
+        subject: `${code} is your verification code`,
+        text: `Hi ${name.split(" ")[0]},
+
+Your verification code is ${code}. It expires in 10 minutes.
+
+If you did not try to create an account, ignore this email.`,
+        html: `<p>Hi ${name.split(" ")[0]?.replace(/[<>&]/g, "")},</p><p>Your verification code is</p><p style="font-size:28px;font-weight:700;letter-spacing:6px">${code}</p><p>It expires in 10 minutes. If you did not try to create an account, ignore this email.</p>`,
+      });
+    } catch (e) {
+      app.log.error(e, "sign-up code email failed");
+      throw new HttpError(502, "email_send_failed", "We could not send the verification email. Check the address and try again.");
+    }
+  }
+
+  // Step 1: validate the details and email a code. No account exists yet.
+  app.post("/v1/auth/signup", async (req) => {
     const b = body(req, z.object({
       name: z.string().trim().min(1).max(100),
       email: z.string().trim().toLowerCase().email(),
@@ -34,8 +71,42 @@ export async function authRoutes(app: FastifyInstance) {
     }));
     const exists = await db.query.users.findFirst({ where: eq(users.email, b.email) });
     if (exists) throw new HttpError(409, "email_taken", "An account with this email already exists");
-    const [user] = await db.insert(users).values({ name: b.name, email: b.email, passwordHash: await hashPassword(b.password) }).returning();
-    const ws = await createWorkspace(user!.id, b.company ?? `${b.name.split(" ")[0]}'s workspace`);
+    const prior = await db.query.pendingSignups.findFirst({ where: eq(pendingSignups.email, b.email) });
+    if (prior && Date.now() - prior.lastSentAt.getTime() < RESEND_GAP_MS) throw new HttpError(429, "too_soon", "A code was just sent. Wait a few seconds before trying again.");
+    const passwordHash = await hashPassword(b.password);
+    await db.insert(pendingSignups).values({ email: b.email, name: b.name, company: b.company ?? null, passwordHash, codeHash: "", expiresAt: new Date() })
+      .onConflictDoUpdate({ target: pendingSignups.email, set: { name: b.name, company: b.company ?? null, passwordHash } });
+    await sendCode(b.email, b.name);
+    return { verify: true, email: b.email };
+  });
+
+  app.post("/v1/auth/signup/resend", async (req) => {
+    const b = body(req, z.object({ email: z.string().trim().toLowerCase().email() }));
+    const row = await db.query.pendingSignups.findFirst({ where: eq(pendingSignups.email, b.email) });
+    if (!row) throw new HttpError(404, "no_signup", "Start sign-up again");
+    if (Date.now() - row.lastSentAt.getTime() < RESEND_GAP_MS) throw new HttpError(429, "too_soon", "A code was just sent. Wait a few seconds before asking for another.");
+    await sendCode(b.email, row.name);
+    return { ok: true };
+  });
+
+  // Step 2: the code proves the address is real; only now is the account created.
+  app.post("/v1/auth/signup/verify", async (req, reply) => {
+    const b = body(req, z.object({ email: z.string().trim().toLowerCase().email(), code: z.string().trim().regex(/^\d{6}$/, "Enter the 6-digit code") }));
+    const row = await db.query.pendingSignups.findFirst({ where: eq(pendingSignups.email, b.email) });
+    if (!row || !row.codeHash) throw new HttpError(400, "no_signup", "Start sign-up again");
+    if (row.expiresAt.getTime() < Date.now()) throw new HttpError(400, "code_expired", "This code has expired. Request a new one.");
+    if (row.attempts >= MAX_ATTEMPTS) throw new HttpError(429, "too_many_attempts", "Too many wrong codes. Request a new one.");
+    const given = Buffer.from(hashCode(b.email, b.code));
+    const real = Buffer.from(row.codeHash);
+    if (given.length !== real.length || !timingSafeEqual(given, real)) {
+      await db.update(pendingSignups).set({ attempts: row.attempts + 1 }).where(eq(pendingSignups.email, b.email));
+      throw new HttpError(400, "wrong_code", "That code is not right");
+    }
+    const taken = await db.query.users.findFirst({ where: eq(users.email, b.email) });
+    if (taken) throw new HttpError(409, "email_taken", "An account with this email already exists");
+    const [user] = await db.insert(users).values({ name: row.name, email: row.email, passwordHash: row.passwordHash }).returning();
+    await db.delete(pendingSignups).where(eq(pendingSignups.email, b.email));
+    const ws = await createWorkspace(user!.id, row.company ?? `${row.name.split(" ")[0]}'s workspace`);
     await createSession(reply, user!.id);
     return { user: { id: user!.id, name: user!.name, email: user!.email }, workspace: ws };
   });

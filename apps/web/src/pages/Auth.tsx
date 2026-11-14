@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Eye, EyeOff } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../api";
 import { GoogleMark, MicrosoftMark } from "../marks";
@@ -15,6 +15,15 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
   const providers = useQuery({ queryKey: ["auth-providers"], queryFn: () => api<{ google: boolean; microsoft: boolean }>("/v1/auth/providers"), staleTime: 60_000 });
   const [busy, setBusy] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  // After the details are accepted, a 6-digit code is emailed and must be entered before the account exists.
+  const [codeFor, setCodeFor] = useState<string | null>(null);
+  const [code, setCode] = useState("");
+  const [cooldown, setCooldown] = useState(0);
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const t = setTimeout(() => setCooldown((c) => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [cooldown]);
   const nav = useNavigate();
   const qc = useQueryClient();
 
@@ -23,14 +32,46 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
     setError(null);
     setBusy(true);
     try {
-      if (mode === "signup") await api("/v1/auth/signup", { body: { name: form.name, email: form.email, password: form.password, company: form.company || undefined } });
-      else await api("/v1/auth/login", { body: { email: form.email, password: form.password } });
+      if (mode === "signup") {
+        await api("/v1/auth/signup", { body: { name: form.name, email: form.email, password: form.password, company: form.company || undefined } });
+        setCodeFor(form.email.trim().toLowerCase());
+        setCooldown(30);
+        return;
+      }
+      await api("/v1/auth/login", { body: { email: form.email, password: form.password } });
       await qc.invalidateQueries({ queryKey: ["me"] });
       nav("/");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Something went wrong");
     } finally {
       setBusy(false);
+    }
+  };
+
+  const verify = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!codeFor) return;
+    setError(null);
+    setBusy(true);
+    try {
+      await api("/v1/auth/signup/verify", { body: { email: codeFor, code } });
+      await qc.invalidateQueries({ queryKey: ["me"] });
+      nav("/");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Something went wrong");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const resend = async () => {
+    if (!codeFor || cooldown > 0) return;
+    setError(null);
+    try {
+      await api("/v1/auth/signup/resend", { body: { email: codeFor } });
+      setCode("");
+      setCooldown(30);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Something went wrong");
     }
   };
 
@@ -41,6 +82,26 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
       <div className="flex flex-1 flex-col justify-center px-4 py-12 sm:px-12">
         <div className="w-full max-w-sm mx-auto">
           <Logo />
+          {codeFor ? (
+            <>
+              <h1 className="text-2xl font-semibold text-ink-900 mt-8">Verify your email</h1>
+              <p className="text-sm text-ink-500 mt-1">We sent a 6-digit code to <b className="text-ink-800">{codeFor}</b>. Enter it below to finish creating your account. It expires in 10 minutes.</p>
+              <form onSubmit={verify} className="mt-8 space-y-4">
+                <div>
+                  <label className="label" htmlFor="auth-code">Verification code</label>
+                  <input id="auth-code" className="input !h-12 text-center text-2xl tracking-[0.5em] font-semibold" inputMode="numeric" autoComplete="one-time-code" maxLength={6} autoFocus
+                    placeholder="••••••" value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))} />
+                </div>
+                {error && <div className="rounded-lg bg-red-50 text-red-700 text-sm px-3 py-2">{error}</div>}
+                <button className="btn-primary w-full h-10" disabled={busy || code.length !== 6}>{busy ? "Verifying…" : "Verify and create account"}</button>
+              </form>
+              <div className="mt-5 flex items-center justify-between text-sm">
+                <button className="text-brand-700 font-medium disabled:text-ink-400" disabled={cooldown > 0} onClick={resend}>{cooldown > 0 ? `Resend code in ${cooldown}s` : "Resend code"}</button>
+                <button className="text-ink-500 hover:text-ink-800" onClick={() => { setCodeFor(null); setCode(""); setError(null); }}>Change email</button>
+              </div>
+            </>
+          ) : (
+          <>
           <h1 className="text-2xl font-semibold text-ink-900 mt-8">{mode === "login" ? "Log in to your account" : "Create your account"}</h1>
           <p className="text-sm text-ink-500 mt-1">{mode === "login" ? "Welcome back." : "Start sending cold email that lands in the inbox."}</p>
           <form onSubmit={submit} className="mt-8 space-y-4">
@@ -78,6 +139,8 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
           <p className="text-sm text-ink-500 mt-6 text-center">
             {mode === "login" ? <>Don't have an account? <Link className="text-brand-700 font-medium" to="/signup">Sign up</Link></> : <>Already have an account? <Link className="text-brand-700 font-medium" to="/login">Log in</Link></>}
           </p>
+          </>
+          )}
         </div>
       </div>
     </div>
