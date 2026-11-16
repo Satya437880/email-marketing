@@ -78,6 +78,19 @@ export const pendingSignups = pgTable("pending_signups", {
   createdAt: createdAt(),
 });
 
+// An invitation to join a workspace. The emailed link carries a secret token (only its hash is stored); opening it is enough to join.
+export const workspaceInvites = pgTable("workspace_invites", {
+  id: id(),
+  workspaceId: ws(),
+  email: text("email").notNull(),
+  role: roleEnum("role").notNull().default("member"),
+  tokenHash: text("token_hash").notNull().unique(),
+  invitedBy: uuid("invited_by").references(() => users.id, { onDelete: "set null" }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+  createdAt: createdAt(),
+}, (t) => [index("workspace_invites_ws").on(t.workspaceId)]);
+
 export const memberships = pgTable("memberships", {
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   workspaceId: ws(),

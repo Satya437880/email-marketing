@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Ban, Check, ChevronDown, Copy, Download, HelpCircle, KeyRound, Plus, Search, Settings as SettingsIcon, Trash2, User as UserIcon, UserPlus, UserX, Webhook } from "lucide-react";
+import { Ban, Check, ChevronDown, Copy, Download, HelpCircle, KeyRound, Mail, Plus, Search, Settings as SettingsIcon, Trash2, User as UserIcon, UserPlus, UserX, Webhook } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
-import { api, type Paged } from "../api";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { api, ApiError, type Paged } from "../api";
 import { useMe, useWs } from "../App";
 import { cx, Empty, fmtDate, Modal, PageHeader, Pager, PortalMenu, Spinner, Toggle, useToast } from "../ui";
 
@@ -75,7 +75,8 @@ const ROLE_OPTIONS = [
   { v: "primebox", l: "Primebox Only", d: "Can only read and answer replies in Primebox" },
   { v: "admin", l: "Admin", d: "Everything, including users and API keys" },
 ];
-const roleLabel = (r: string) => ROLE_OPTIONS.find((o) => o.v === r)?.l ?? (r === "owner" ? "Owner" : r === "viewer" ? "Viewer" : r);
+// Everyone is equal here: the workspace creator's stored "owner" role is shown and handled as Admin.
+const roleLabel = (r: string) => ROLE_OPTIONS.find((o) => o.v === (r === "owner" ? "admin" : r))?.l ?? (r === "viewer" ? "Viewer" : r);
 
 function RoleSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
@@ -110,26 +111,39 @@ function SectionHeader({ title, text, actions }: { title: string; text: string; 
 }
 
 function TeamTab() {
+  const nav = useNavigate();
   const ws = useWs();
   const me = useMe();
   const qc = useQueryClient();
   const toast = useToast();
-  const [modal, setModal] = useState<null | "existing" | "new">(null);
-  const [f, setF] = useState({ name: "", email: "", password: "", role: "member" });
+  const [modal, setModal] = useState<null | "existing" | "invite">(null);
+  const [f, setF] = useState({ email: "", role: "member" });
+  const [sent, setSent] = useState<{ email: string; link: string; emailed: boolean; sentFrom: string | null } | null>(null);
   const myRole = me.data?.workspaces.find((w) => w.slug === ws)?.role;
   const canManage = myRole === "owner" || myRole === "admin";
   const members = useQuery({ queryKey: ["members", ws], queryFn: () => api<{ id: string; name: string; email: string; role: string }[]>(`/v1/workspaces/${ws}/members`) });
   const refresh = () => qc.invalidateQueries({ queryKey: ["members", ws] });
-  const close = () => { setModal(null); setF({ name: "", email: "", password: "", role: "member" }); };
+  const close = () => { setModal(null); setSent(null); setF({ email: "", role: "member" }); };
   const addExisting = useMutation({
     mutationFn: () => api(`/v1/workspaces/${ws}/members`, { body: { email: f.email, role: f.role } }),
     onSuccess: () => { toast("User added to the workspace"); close(); refresh(); },
+    // No account with that email yet: send them an invitation instead of stopping with an error.
+    onError: (e: Error) => {
+      if (e instanceof ApiError && e.code === "user_not_found") { setModal("invite"); invite.mutate(); return; }
+      toast(e.message, "error");
+    },
+  });
+  // "Add new user": emails an invitation link. Opening it adds the person to the workspace, with no password to share.
+  const invite = useMutation({
+    mutationFn: () => api<{ emailed: boolean; link: string; email: string; sentFrom: string | null }>(`/v1/workspaces/${ws}/invites`, { body: { email: f.email, role: f.role } }),
+    onSuccess: (r) => { setSent({ email: r.email, link: r.link, emailed: r.emailed, sentFrom: r.sentFrom }); void qc.invalidateQueries({ queryKey: ["invites", ws] }); },
     onError: (e: Error) => toast(e.message, "error"),
   });
-  const addNew = useMutation({
-    mutationFn: () => api(`/v1/workspaces/${ws}/members/new`, { body: f }),
-    onSuccess: () => { toast(`Account created for ${f.email}. Share their password with them securely.`); close(); refresh(); },
-    onError: (e: Error) => toast(e.message, "error"),
+  const accountUsers = useQuery({ queryKey: ["account-users", ws], queryFn: () => api<{ id: string; name: string; email: string }[]>(`/v1/workspaces/${ws}/account-users`), enabled: canManage && modal === "existing" });
+  const pending = useQuery({ queryKey: ["invites", ws], queryFn: () => api<{ id: string; email: string; role: string; expiresAt: string }[]>(`/v1/workspaces/${ws}/invites`), enabled: canManage });
+  const revoke = useMutation({
+    mutationFn: (id: string) => api(`/v1/workspaces/${ws}/invites/${id}`, { method: "DELETE" }),
+    onSuccess: () => { toast("Invitation cancelled"); void qc.invalidateQueries({ queryKey: ["invites", ws] }); },
   });
   const changeRole = useMutation({
     mutationFn: ({ id, role }: { id: string; role: string }) => api(`/v1/workspaces/${ws}/members/${id}`, { method: "PATCH", body: { role } }),
@@ -138,7 +152,12 @@ function TeamTab() {
   });
   const remove = useMutation({
     mutationFn: (id: string) => api(`/v1/workspaces/${ws}/members/${id}`, { method: "DELETE" }),
-    onSuccess: () => { toast("User removed"); refresh(); },
+    onSuccess: (_r, id) => {
+      toast("User removed");
+      refresh();
+      // Removing yourself takes you out of the workspace, so go back to the start page.
+      if (id === me.data?.user.id) { void qc.invalidateQueries({ queryKey: ["me"] }); nav("/"); }
+    },
     onError: (e: Error) => toast(e.message, "error"),
   });
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setF({ ...f, [k]: e.target.value });
@@ -150,27 +169,27 @@ function TeamTab() {
         text="Manage your existing team and change roles/permissions."
         actions={canManage && <>
           <button className="btn-secondary h-10" onClick={() => setModal("existing")}><Plus size={16} /> Add existing users</button>
-          <button className="btn-primary h-10" onClick={() => setModal("new")}><UserPlus size={16} /> Add new user</button>
+          <button className="btn-primary h-10" onClick={() => setModal("invite")}><UserPlus size={16} /> Add new user</button>
         </>}
       />
       <div className="card overflow-hidden">
         {members.isLoading ? <Spinner /> : (
           <div className="overflow-x-auto">
             <table className="w-full">
-              <thead><tr><th className="th">Name</th><th className="th">Email</th><th className="th w-[30%]">Role</th><th className="th w-16" /></tr></thead>
+              <thead><tr><th className="th w-[32%] border-r border-ink-200">Name</th><th className="th w-[32%] border-r border-ink-200">Email</th><th className="th w-[30%] border-r border-ink-200">Role</th><th className="th" /></tr></thead>
               <tbody>{(members.data ?? []).map((m) => {
                 const isMe = m.id === me.data?.user.id;
-                const locked = !canManage || m.role === "owner" || isMe;
+                const locked = !canManage;
                 return (
                   <tr key={m.id}>
-                    <td className="td"><span className="flex items-center gap-2.5"><span className="grid place-items-center w-7 h-7 rounded-md border border-ink-200"><UserIcon size={15} /></span><span className="font-medium">{m.name}{isMe && <span className="text-ink-400 font-normal"> (you)</span>}</span></span></td>
-                    <td className="td text-ink-500">{m.email}</td>
-                    <td className="td">
+                    <td className="td !py-2.5 border-r border-ink-100"><span className="flex items-center gap-3"><span className="grid place-items-center w-7 h-7 rounded-md border border-ink-200 bg-surface shadow-sm"><UserIcon size={15} /></span><span className="font-medium">{m.name}{isMe && <span className="text-ink-400 font-normal"> (you)</span>}</span></span></td>
+                    <td className="td !py-2.5 text-ink-500 border-r border-ink-100">{m.email}</td>
+                    <td className="td !px-2 !py-1.5 border-r border-ink-100">
                       {locked
-                        ? <span className="block px-3 py-2">{roleLabel(m.role)}</span>
-                        : <RoleSelect value={m.role} onChange={(role) => changeRole.mutate({ id: m.id, role })} />}
+                        ? <span className="block px-3 py-2" title="Only an admin can change roles">{roleLabel(m.role)}</span>
+                        : <RoleSelect value={m.role === "owner" ? "admin" : m.role} onChange={(role) => changeRole.mutate({ id: m.id, role })} />}
                     </td>
-                    <td className="td text-center">{!locked && <button className="btn-ghost btn-sm" title="Remove from workspace" onClick={() => confirm(`Remove ${m.name} from this workspace?`) && remove.mutate(m.id)}><Trash2 size={16} /></button>}</td>
+                    <td className="td !py-2.5 text-center">{!locked && <button className="btn-ghost btn-sm" title={isMe ? "Leave this workspace" : "Remove from workspace"} onClick={() => confirm(isMe ? "Leave this workspace? You will lose access to it." : `Remove ${m.name} from this workspace?`) && remove.mutate(m.id)}><Trash2 size={16} /></button>}</td>
                   </tr>
                 );
               })}</tbody>
@@ -178,29 +197,83 @@ function TeamTab() {
           </div>
         )}
       </div>
+      {canManage && (members.data?.length ?? 0) <= 1 && (
+        <p className="text-sm text-ink-500 mt-3">You are the only member. Use <b>Add new user</b> to invite a teammate. Once they join, you can change their role or remove them here.</p>
+      )}
+      {canManage && !!pending.data?.length && (
+        <div className="card overflow-hidden mt-4">
+          <div className="px-4 py-2.5 text-sm font-semibold border-b border-ink-100">Pending invitations</div>
+          {pending.data.map((i) => (
+            <div key={i.id} className="flex items-center gap-3 px-4 py-2.5 text-sm border-b border-ink-100 last:border-0">
+              <Mail size={15} className="text-ink-400" />
+              <span className="flex-1 truncate">{i.email}</span>
+              <span className="text-ink-500">{roleLabel(i.role)}</span>
+              <span className="text-xs text-ink-400">expires {fmtDate(i.expiresAt)}</span>
+              <button className="btn-ghost btn-sm" onClick={() => revoke.mutate(i.id)}>Cancel</button>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="grid sm:grid-cols-3 gap-3 mt-4">
         {ROLE_OPTIONS.map((r) => <div key={r.v} className="text-xs text-ink-500"><b className="text-ink-700">{r.l}:</b> {r.d}</div>)}
       </div>
 
-      {modal && (
-        <Modal open onClose={close} title={modal === "new" ? "Add new user" : "Add existing users"}
-          subtitle={modal === "new" ? "Create an account for a teammate and add them to this workspace." : "Add someone who already has an account."}
-          icon={<UserPlus size={20} />}
+      {modal === "invite" && (
+        <Modal open onClose={close} title="Add new user" icon={<UserPlus size={20} />}
+          subtitle="Grant a new user access to your workspace to improve team efficiency and streamline collaboration."
+          footer={sent ? <button className="btn-primary" onClick={close}>Done</button> : <>
+            <button className="btn-secondary" onClick={close}>Cancel</button>
+            <button className="btn-primary" disabled={!f.email.trim() || invite.isPending} onClick={() => invite.mutate()}>{invite.isPending ? "Inviting…" : "Invite to workspace"}</button>
+          </>}>
+          {sent ? (
+            <div className="space-y-3">
+              <p className="text-sm">{sent.emailed ? <>We emailed an invitation to <b>{sent.email}</b>{sent.sentFrom ? <> from {sent.sentFrom}</> : null}. They open the link and they are in. No separate sign-up or password to share.</> : <>The invitation for <b>{sent.email}</b> is ready, but no email could be sent because there is no sending account set up (connect a mailbox, or set SYSTEM_SMTP_URL). Copy the link below and send it to them yourself.</>}</p>
+              <div className="flex gap-2">
+                <input className="input" readOnly value={sent.link} onFocus={(e) => e.currentTarget.select()} aria-label="Invitation link" />
+                <button className="btn-secondary shrink-0" onClick={() => { void navigator.clipboard.writeText(sent.link).then(() => toast("Link copied")).catch(() => toast("Could not copy", "error")); }}>Copy link</button>
+              </div>
+              <p className="text-xs text-ink-500">The link works for 7 days and only for this email address.</p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div>
+                <label className="label" htmlFor="invite-email">User email</label>
+                <div className="relative">
+                  <Mail size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-400" />
+                  <input id="invite-email" className="input pl-10" type="email" placeholder="user@domain.com" value={f.email} onChange={set("email")} autoFocus onKeyDown={(e) => e.key === "Enter" && f.email.trim() && invite.mutate()} />
+                </div>
+              </div>
+              <div>
+                <label className="label">Role</label>
+                <div className="rounded-lg border border-ink-200"><RoleSelect value={f.role} onChange={(role) => setF({ ...f, role })} /></div>
+                <p className="text-xs text-ink-500 mt-2"><b className="text-ink-700">{roleLabel(f.role)}:</b> {ROLE_OPTIONS.find((r) => r.v === f.role)?.d}</p>
+              </div>
+            </div>
+          )}
+        </Modal>
+      )}
+      {modal === "existing" && (
+        <Modal open onClose={close} title="Add existing user" icon={<UserPlus size={20} />}
+          subtitle="Account users: people already added to your other workspaces."
           footer={<>
             <button className="btn-secondary" onClick={close}>Cancel</button>
-            {modal === "new"
-              ? <button className="btn-primary" disabled={!f.name.trim() || !f.email || f.password.length < 8 || addNew.isPending} onClick={() => addNew.mutate()}>Create user</button>
-              : <button className="btn-primary" disabled={!f.email || addExisting.isPending} onClick={() => addExisting.mutate()}>Add user</button>}
+            <button className="btn-primary" disabled={!f.email || addExisting.isPending} onClick={() => addExisting.mutate()}>Add user to workspace</button>
           </>}>
-          <div className="space-y-3">
-            {modal === "new" && <div><label className="label">Full name</label><input className="input" value={f.name} onChange={set("name")} autoFocus /></div>}
-            <div><label className="label">Email</label><input className="input" type="email" value={f.email} onChange={set("email")} autoFocus={modal === "existing"} /></div>
-            {modal === "new" && (
-              <div><label className="label">Temporary password</label><input className="input" type="text" value={f.password} onChange={set("password")} placeholder="At least 8 characters" />
-                <p className="text-xs text-ink-500 mt-1">Share it with them privately. They log in with this email and password.</p></div>
-            )}
-            <div><label className="label">Role</label>
-              <select className="input" value={f.role} onChange={set("role")}>{ROLE_OPTIONS.map((r) => <option key={r.v} value={r.v}>{r.l} — {r.d}</option>)}</select>
+          <div className="space-y-4">
+            <div>
+              <label className="label" htmlFor="existing-user">Select user</label>
+              <select id="existing-user" className="input h-11" value={f.email} onChange={set("email")} disabled={accountUsers.isLoading || !accountUsers.data?.length}>
+                <option value="">{accountUsers.isLoading ? "Loading…" : accountUsers.data?.length ? "Select" : "No users to add"}</option>
+                {(accountUsers.data ?? []).map((u) => <option key={u.id} value={u.email}>{u.name} · {u.email}</option>)}
+              </select>
+              {!accountUsers.isLoading && !accountUsers.data?.length && (
+                <p className="text-xs text-ink-500 mt-2">Everyone from your other workspaces is already here. To bring in someone new, use <b>Add new user</b> and we email them an invitation.</p>
+              )}
+            </div>
+            <div>
+              <label className="label">Role</label>
+              <div className="rounded-lg border border-ink-200"><RoleSelect value={f.role} onChange={(role) => setF({ ...f, role })} /></div>
+              <p className="text-xs text-ink-500 mt-2"><b className="text-ink-700">{roleLabel(f.role)}:</b> {ROLE_OPTIONS.find((r) => r.v === f.role)?.d}</p>
             </div>
           </div>
         </Modal>

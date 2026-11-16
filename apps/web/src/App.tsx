@@ -8,6 +8,7 @@ import { MailboxesPage } from "./pages/Mailboxes";
 import { PrimeboxPage } from "./pages/Primebox";
 import { SequenceBuilder } from "./pages/SequenceBuilder";
 import { ComposePage } from "./pages/Compose";
+import { InvitePage } from "./pages/Invite";
 import { EmailsPage } from "./pages/Emails";
 import { SequencesPage } from "./pages/Sequences";
 import { SettingsPage } from "./pages/Settings";
@@ -72,6 +73,7 @@ export function App() {
       <Route path="/" element={<Home />} />
       <Route path="/login" element={<AuthPage mode="login" />} />
       <Route path="/signup" element={<AuthPage mode="signup" />} />
+      <Route path="/invite/:token" element={<InvitePage />} />
       <Route path="/:ws/*" element={<Protected />} />
     </Routes>
   );

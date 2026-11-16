@@ -134,6 +134,27 @@
       "when": 1794648467685,
       "tag": "0018_sequences_no_pause",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1794757257158,
+      "tag": "0019_purple_monster_badoon",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1794758540120,
+      "tag": "0020_wandering_thaddeus_ross",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1794820411876,
+      "tag": "0021_third_shatterstar",
+      "breakpoints": true
     }
   ]
 }

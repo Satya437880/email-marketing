@@ -7,6 +7,13 @@ import { z } from "zod";
 import { API_KEY_PREFIX, hashApiKey, hashPassword, requireRole, requireUser, wsId } from "../auth";
 import { body, HttpError, idParams, params, query } from "../http";
 
+// Throws if `userId` is the only admin (or owner) left, because removing or demoting them would lock everyone out of settings.
+async function assertAnotherAdmin(workspaceId: string, userId: string) {
+  const admins = await db.select({ userId: memberships.userId }).from(memberships)
+    .where(and(eq(memberships.workspaceId, workspaceId), inArray(memberships.role, ["owner", "admin"])));
+  if (admins.length === 1 && admins[0]!.userId === userId) throw new HttpError(400, "last_admin", "Make someone else an admin first. A workspace needs at least one admin.");
+}
+
 export async function workspaceRoutes(app: FastifyInstance) {
   app.patch("/v1/workspaces/:ws", async (req) => {
     requireRole(req, "owner", "admin");
@@ -16,6 +23,23 @@ export async function workspaceRoutes(app: FastifyInstance) {
     }
     const [ws] = await db.update(workspaces).set(b).where(eq(workspaces.id, wsId(req))).returning();
     return ws;
+  });
+
+  // "Add existing user": people already in your account's other workspaces (so they have signed in before) who are not in this one yet.
+  app.get("/v1/workspaces/:ws/account-users", async (req) => {
+    requireRole(req, "owner", "admin");
+    const current = wsId(req);
+    const orgId = req.workspace!.orgId;
+    const rows = await db.execute<{ id: string; name: string; email: string }>(sql`
+      select distinct u.id, u.name, u.email
+      from memberships m
+      join workspaces w on w.id = m.workspace_id
+      join users u on u.id = m.user_id
+      where w.org_id = ${orgId} and m.workspace_id <> ${current}
+        and not exists (select 1 from memberships x where x.user_id = u.id and x.workspace_id = ${current})
+      order by u.name
+    `) as unknown as { id: string; name: string; email: string }[];
+    return rows;
   });
 
   app.get("/v1/workspaces/:ws/members", async (req) => {
@@ -53,10 +77,10 @@ export async function workspaceRoutes(app: FastifyInstance) {
     requireRole(req, "owner", "admin");
     const p = params(req, idParams);
     const b = body(req, z.object({ role: z.enum(["admin", "member", "viewer", "primebox"]) }));
-    if (p.id === requireUser(req).id) throw new HttpError(400, "self_role", "You can't change your own role");
-    const [row] = await db.update(memberships).set({ role: b.role })
-      .where(and(eq(memberships.workspaceId, wsId(req)), eq(memberships.userId, p.id), sql`${memberships.role} <> 'owner'`)).returning();
-    if (!row) throw new HttpError(400, "cannot_change", "The workspace owner's role can't be changed");
+    // Everyone is equal: any admin can change anyone's role. Only the last admin is protected, so the workspace is never left without one.
+    if (b.role !== "admin") await assertAnotherAdmin(wsId(req), p.id);
+    const [row] = await db.update(memberships).set({ role: b.role }).where(and(eq(memberships.workspaceId, wsId(req)), eq(memberships.userId, p.id))).returning();
+    if (!row) throw new HttpError(404, "not_found", "That person is not in this workspace");
     return { ok: true };
   });
 
@@ -108,8 +132,8 @@ export async function workspaceRoutes(app: FastifyInstance) {
   app.delete("/v1/workspaces/:ws/members/:id", async (req) => {
     requireRole(req, "owner", "admin");
     const p = params(req, idParams);
-    if (p.id === requireUser(req).id) throw new HttpError(400, "self_remove", "You can't remove yourself");
-    await db.delete(memberships).where(and(eq(memberships.workspaceId, wsId(req)), eq(memberships.userId, p.id), sql`${memberships.role} <> 'owner'`));
+    await assertAnotherAdmin(wsId(req), p.id);
+    await db.delete(memberships).where(and(eq(memberships.workspaceId, wsId(req)), eq(memberships.userId, p.id)));
     return { ok: true };
   });
 
@@ -210,7 +234,9 @@ export async function workspaceRoutes(app: FastifyInstance) {
     const id = wsId(req);
     const rows = await db.select({
       id: labels.id, name: labels.name, color: labels.color, system: labels.system, countsAs: labels.countsAs,
-      count: sql<number>`(select count(*)::int from ${threads} t where t.label_id = ${labels.id} and t.has_inbound)`,
+      // The label's id is written out in full: with a bare "id" the subquery would read the thread's own id and always count 0.
+      count: sql<number>`(select count(*)::int from ${threads} t where t.label_id = "labels"."id" and t.has_inbound)`,
+      unread: sql<number>`(select count(*)::int from ${threads} t where t.label_id = "labels"."id" and t.has_inbound and t.unread)`,
     }).from(labels).where(eq(labels.workspaceId, id)).orderBy(asc(labels.position), asc(labels.name));
     return rows;
   });
