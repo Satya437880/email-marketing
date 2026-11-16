@@ -5,9 +5,10 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../api";
 import { GoogleMark, MicrosoftMark } from "../marks";
 import { Logo } from "../Shell";
+import { cx } from "../ui";
 
 export function AuthPage({ mode }: { mode: "login" | "signup" }) {
-  const [form, setForm] = useState({ name: "", company: "", email: "", password: "" });
+  const [form, setForm] = useState({ name: "", company: "", email: "", password: "", confirm: "" });
   // A failed Google/Microsoft login comes back to this page as ?error=…
   const [params] = useSearchParams();
   const [error, setError] = useState<string | null>(params.get("error"));
@@ -33,7 +34,8 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
     setBusy(true);
     try {
       if (mode === "signup") {
-        await api("/v1/auth/signup", { body: { name: form.name, email: form.email, password: form.password, company: form.company || undefined } });
+        if (form.password !== form.confirm) { setError("The two passwords do not match."); return; }
+        await api("/v1/auth/signup", { body: { name: form.name, email: form.email, password: form.password, confirmPassword: form.confirm, company: form.company || undefined } });
         setCodeFor(form.email.trim().toLowerCase());
         setCooldown(30);
         return;
@@ -124,8 +126,17 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
                 </button>
               </div>
             </div>
+            {mode === "signup" && (
+              <div>
+                <label className="label" htmlFor="auth-confirm">Confirm password</label>
+                <input id="auth-confirm" className={cx("input", form.confirm && form.confirm !== form.password && "border-red-500")} type={showPassword ? "text" : "password"} value={form.confirm} onChange={set("confirm")} required autoComplete="new-password" />
+                {form.confirm && (form.confirm === form.password
+                  ? <p className="text-xs text-emerald-700 mt-1">Passwords match</p>
+                  : <p className="text-xs text-red-600 mt-1">Passwords do not match</p>)}
+              </div>
+            )}
             {error && <div className="rounded-lg bg-red-50 text-red-700 text-sm px-3 py-2">{error}</div>}
-            <button className="btn-primary w-full h-10" disabled={busy}>{busy ? "Please wait…" : mode === "login" ? "Log in" : "Create account"}</button>
+            <button className="btn-primary w-full h-10" disabled={busy || (mode === "signup" && form.password !== form.confirm)}>{busy ? "Please wait…" : mode === "login" ? "Log in" : "Create account"}</button>
           </form>
           {(providers.data?.google || providers.data?.microsoft) && (
             <>

@@ -66,6 +66,24 @@ export interface ConnectionTest {
   imap: { ok: boolean; error?: string };
 }
 
+// Turns a mail server's raw error into what the person should do about it.
+export function explainMailError(host: string, raw: string): string {
+  const gmail = /gmail|google/i.test(host);
+  const outlook = /office365|outlook/i.test(host);
+  let msg: string | null = null;
+  if (/application-specific password|InvalidSecondFactor|app password/i.test(raw)) msg = "Google needs an app password, not the normal account password. Turn on 2-Step Verification for the account, then create an app password at myaccount.google.com/apppasswords and paste that.";
+  else if (/IMAP.{0,40}(disabled|not enabled|turned off)|web login required|\[ALERT\]/i.test(raw)) msg = gmail ? "IMAP is switched off for this Gmail account. In Gmail open Settings, See all settings, Forwarding and POP/IMAP, and choose Enable IMAP, then save." : "IMAP access is switched off for this mailbox. Turn it on in the mail provider's settings.";
+  else if (/SmtpClientAuthentication|authenticated smtp/i.test(raw)) msg = "Authenticated SMTP is turned off for this Microsoft mailbox. Your admin can enable it in the Microsoft 365 admin centre.";
+  else if (/invalid login|invalid credentials|535|534|username and password not accepted|authenticationfailed|authentication failed|auth.*fail|login failed/i.test(raw)) {
+    msg = gmail ? "Google refused the email address or app password. Check the address, and create a fresh app password (16 letters, spaces don't matter)."
+      : outlook ? "Microsoft refused the email address or password. Check them, and ask your admin whether Authenticated SMTP and IMAP are enabled."
+      : "The mail server refused the email address or password. Check both.";
+  } else if (/ENOTFOUND|EAI_AGAIN/i.test(raw)) msg = `The server name ${host} was not found. Check it for typing mistakes.`;
+  else if (/ETIMEDOUT|ECONNREFUSED|ECONNRESET|timed out|socket/i.test(raw)) msg = `Could not reach the mail server at ${host}. Check the server name and port, the SSL/TLS setting and your internet connection, then try again.`;
+  else if (/certificate|self.signed|TLS|SSL/i.test(raw)) msg = "The secure connection failed. Check the port and the SSL/TLS setting for this server.";
+  return msg ? `${msg} (${raw.slice(0, 160)})` : raw;
+}
+
 export async function testConnection(server: ServerConfig, auth: MailboxAuth): Promise<ConnectionTest> {
   const result: ConnectionTest = { smtp: { ok: false }, imap: { ok: false } };
   const transporter = nodemailer.createTransport({ ...server.smtp, auth: smtpAuth(auth), connectionTimeout: 15000 });
@@ -73,16 +91,18 @@ export async function testConnection(server: ServerConfig, auth: MailboxAuth): P
     await transporter.verify();
     result.smtp.ok = true;
   } catch (e) {
-    result.smtp.error = (e as Error).message;
+    result.smtp.error = explainMailError(server.smtp.host, (e as Error).message);
   } finally {
     transporter.close();
   }
   const client = new ImapFlow({ ...server.imap, auth: imapAuth(auth), logger: false });
+  // A dropped connection emits an "error" event; with no listener Node would stop the whole program. The call being awaited fails instead.
+  client.on("error", () => undefined);
   try {
     await client.connect();
     result.imap.ok = true;
   } catch (e) {
-    result.imap.error = (e as Error).message;
+    result.imap.error = explainMailError(server.imap.host, (e as Error).message);
   } finally {
     await client.logout().catch(() => undefined);
   }
@@ -113,6 +133,7 @@ export async function fetchNewMessages(
   limit = 200,
 ): Promise<{ messages: FetchedMessage[]; lastUid: number; uidValidity: string }> {
   const client = new ImapFlow({ ...server.imap, auth: imapAuth(auth), logger: false });
+  client.on("error", () => undefined);
   await client.connect();
   const messages: FetchedMessage[] = [];
   let sinceUid = cursor.lastUid;

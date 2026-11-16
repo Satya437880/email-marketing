@@ -39,6 +39,16 @@ export function newMessageId(fromAddress: string): string {
   return `<${Date.now().toString(36)}.${randomBytes(9).toString("hex")}@${domain}>`;
 }
 
+// A link on this computer (localhost) means nothing to the person who receives the email, so it must never be put in one.
+export function isLocalUrl(u: string): boolean {
+  try {
+    const h = new URL(u).hostname.toLowerCase();
+    return h === "localhost" || h.endsWith(".localhost") || h === "127.0.0.1" || h === "0.0.0.0" || h === "[::1]" || h.endsWith(".local");
+  } catch {
+    return false;
+  }
+}
+
 export function composeEmail(input: ComposeInput): OutgoingEmail {
   // Drop trailing empty lines from the body so the signature sits exactly one blank line below it.
   const inline: NonNullable<OutgoingEmail["attachments"]> = [];
@@ -54,27 +64,33 @@ export function composeEmail(input: ComposeInput): OutgoingEmail {
   const leading = /^(\s|&nbsp;|<br\s*\/?>|<(div|p)>\s*(<br\s*\/?>)?\s*<\/\2>)+/i;
   if (input.signatureHtml?.replace(leading, "").trim()) html += `${gap}${input.signatureHtml.replace(leading, "")}`;
 
+  // With no public web address configured the opt-out cannot be a link; recipients are asked to reply instead (replies saying so are detected).
+  const optLocal = !!input.optOut && isLocalUrl(input.optOut.url);
   if (input.optOut) {
     // Directly under the signature, no blank line (still one blank line after the body if there is no signature).
     const hasSig = html.endsWith(input.signatureHtml?.replace(leading, "") ?? "\0") && !!input.signatureHtml?.replace(leading, "").trim();
-    html += `${hasSig ? "" : gap}<div style="margin:0;padding:0;font-size:10px;line-height:1.3;color:#888">${escapeHtml(input.optOut.text)} <a href="${escapeHtml(input.optOut.url)}">here</a>.</div>`;
+    html += `${hasSig ? "" : gap}<div style="margin:0;padding:0;font-size:10px;line-height:1.3;color:#888">${optLocal ? `${escapeHtml(input.optOut.text)}: just reply “unsubscribe”.` : `${escapeHtml(input.optOut.text)} <a href="${escapeHtml(input.optOut.url)}">here</a>.`}</div>`;
   }
 
-  if (!input.plainText && input.clickRewrite) {
+  if (!input.plainText && input.clickRewrite && !isLocalUrl(input.clickRewrite("https://example.com"))) {
     const rewrite = input.clickRewrite;
     const skip = input.optOut?.url;
     html = html.replace(/href="(https?:\/\/[^"]+)"/gi, (whole, url: string) => (url === skip ? whole : `href="${escapeHtml(rewrite(url))}"`));
   }
-  if (!input.plainText && input.openPixelUrl) {
+  if (!input.plainText && input.openPixelUrl && !isLocalUrl(input.openPixelUrl)) {
     html += `<img src="${escapeHtml(input.openPixelUrl)}" width="1" height="1" alt="" style="display:none">`;
   }
 
   const headers: Record<string, string> = {};
   if (input.optOut) {
-    const targets = [`<${input.optOut.url}>`];
-    if (input.optOut.mailto) targets.unshift(`<mailto:${input.optOut.mailto}>`);
-    headers["List-Unsubscribe"] = targets.join(", ");
-    headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click";
+    if (optLocal) {
+      headers["List-Unsubscribe"] = `<mailto:${input.optOut.mailto ?? input.from.address}?subject=unsubscribe>`;
+    } else {
+      const targets = [`<${input.optOut.url}>`];
+      if (input.optOut.mailto) targets.unshift(`<mailto:${input.optOut.mailto}>`);
+      headers["List-Unsubscribe"] = targets.join(", ");
+      headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click";
+    }
   }
 
   const subject = input.thread && !/^re:/i.test(input.subject) ? `Re: ${input.subject}` : input.subject;

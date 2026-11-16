@@ -76,7 +76,9 @@ function credentialsFrom(b: z.infer<typeof createSchema>): { auth: { type: "pass
       return { smtp: b.smtp, imap: b.imap };
     })()
     : PROVIDER_SERVERS[b.provider];
-  return { auth: { type: "password", user: b.username || b.email, pass: b.password }, server };
+  // Pasted app passwords often carry spaces (Google shows them in groups of four) and addresses stray capitals; neither belongs in the login.
+  const pass = b.provider === "google" ? b.password.replace(/\s+/g, "") : b.password;
+  return { auth: { type: "password", user: (b.username || b.email).trim(), pass }, server };
 }
 
 async function ensureDomain(workspaceId: string, email: string) {

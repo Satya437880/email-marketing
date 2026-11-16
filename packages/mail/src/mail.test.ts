@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyInbound, classifyReplyIntent, extractReturnDate } from "./classify";
+import { classifyInbound, classifyReplyIntent, extractReturnDate, replyOwnText } from "./classify";
 import { composeEmail } from "./compose";
 import { espFromMx } from "./esp";
 import { htmlToText, listVariables, render } from "./render";
@@ -131,6 +131,28 @@ describe("espFromMx", () => {
     expect(espFromMx(["acme-io.mail.protection.outlook.com"])).toBe("microsoft");
     expect(espFromMx(["mx.zoho.com"])).toBe("other");
     expect(espFromMx([])).toBe("unknown");
+  });
+
+  it("never puts a localhost link in an email", () => {
+    const e = composeEmail({
+      from: { name: "Mara", address: "m@x.com" }, to: "s@y.com", subject: "s", plainText: false, bodyHtml: "Hi <a href=\"https://site.io\">site</a>",
+      optOut: { url: "http://localhost:4000/u/abc", text: "If you'd rather not hear from me, let me know" },
+      openPixelUrl: "http://localhost:4000/t/o/abc", clickRewrite: (u) => `http://localhost:4000/t/c/abc?u=${encodeURIComponent(u)}`,
+    });
+    expect(e.html).not.toMatch(/localhost/);
+    expect(e.text).not.toMatch(/localhost/);
+    expect(e.html).toContain("just reply");
+    expect(e.html).toContain('href="https://site.io"');
+    expect(e.headers["List-Unsubscribe"]).toBe("<mailto:m@x.com?subject=unsubscribe>");
+    expect(e.headers["List-Unsubscribe-Post"]).toBeUndefined();
+  });
+
+  it("keeps only what the person wrote, not the quoted email", () => {
+    expect(replyOwnText("Iam interested\n\nOn Sat, 14 Nov 2026, Mara John <mara@x.com> wrote:\n> Hi sarah")).toBe("Iam interested");
+    expect(replyOwnText("Iam interested\n\nFrom: Mara John <mara@x.com>\nSent: Saturday\nSubject: test")).toBe("Iam interested");
+    expect(replyOwnText("Iam interested On Sat, 14 Nov 2026, Mara John <mara@x.com> wrote: Hi sarah")).toBe("Iam interested");
+    expect(replyOwnText("Sounds good\n\nSent from my iPhone")).toBe("Sounds good");
+    expect(replyOwnText("Just a plain reply")).toBe("Just a plain reply");
   });
 
   it("labels replies from what they say", () => {

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, CheckCircle2, ChevronRight, Clock, Download, Eye, EyeOff, FileText, HelpCircle, Mail, Plus, RefreshCw, Search, Send, Settings2, Trash2, Upload, X, XCircle } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { AlertTriangle, CheckCircle2, ChevronRight, Clock, Eye, EyeOff, HelpCircle, Mail, Plus, RefreshCw, Search, Send, Settings2, Trash2, X, XCircle } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, ApiError, type Mailbox, type SenderProfile } from "../api";
 import { useWs } from "../App";
@@ -335,7 +335,7 @@ function EditMailboxModal({ mailbox, onClose, onSaved }: { mailbox: Mailbox; onC
 }
 
 const PASSWORD_HINT: Record<Provider, string> = {
-  google: "Google: turn on 2-step verification for the account, then create an app password and paste it below.",
+  google: "Gmail needs two things once per account: (1) turn on 2-Step Verification, then create an App password at myaccount.google.com/apppasswords and paste it below; (2) in Gmail go to Settings, See all settings, Forwarding and POP/IMAP, and choose Enable IMAP. Works for every Gmail and Google Workspace address, with no Google sign-in screen.",
   microsoft: "Microsoft 365: your admin may need to enable Authenticated SMTP for this mailbox.",
   smtp: "Zoho, Fastmail, cPanel hosting, or your own mail server. Your host's help pages list these server settings.",
 };
@@ -350,18 +350,19 @@ function connectWithProvider(ws: string, provider: OAuthKind, hintEmail?: string
   window.location.assign(`/v1/workspaces/${ws}/mailboxes/oauth/${provider}/start?${params}`);
 }
 
-function ProviderButton({ provider, busy, disabled, onClick }: { provider: OAuthKind; busy: boolean; disabled: boolean; onClick: () => void }) {
-  const name = provider === "google" ? "Google" : "Microsoft";
+function ProviderButton({ provider, busy, disabled, onClick, unavailable }: { provider: OAuthKind; busy: boolean; disabled: boolean; onClick: () => void; unavailable?: boolean }) {
+  const name = provider === "google" ? "Gmail" : "Outlook";
   return (
     <button
       className="w-full h-12 rounded-xl border border-ink-200 bg-surface hover:bg-ink-50 hover:border-ink-300 flex items-center justify-center gap-3 text-[15px] font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-      disabled={disabled}
+      disabled={disabled || unavailable}
+      title={unavailable ? `${name} sign-in is not set up on this server yet` : undefined}
       onClick={onClick}
     >
       {busy
         ? <span className="h-5 w-5 rounded-full border-2 border-ink-300 border-t-ink-700 animate-spin" aria-hidden />
         : provider === "google" ? <GoogleMark /> : <MicrosoftMark />}
-      {busy ? `Redirecting to ${name}…` : `Continue with ${name}`}
+      {busy ? `Redirecting to ${provider === "google" ? "Google" : "Microsoft"}…` : unavailable ? `${name} (not set up yet)` : `Continue with ${name}`}
     </button>
   );
 }
@@ -392,17 +393,9 @@ function AddMailboxModal({ onClose }: { onClose: () => void }) {
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setF({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.type === "number" ? Number(e.target.value) : e.target.value });
 
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [bulkResult, setBulkResult] = useState<{ connected: number; failed: number; results: { row: number; email: string; ok: boolean; error?: string }[] } | null>(null);
-  const bulk = useMutation({
-    mutationFn: async (file: File) => api<NonNullable<typeof bulkResult>>(`/v1/workspaces/${ws}/mailboxes/bulk`, {
-      body: { csv: await file.text() },
-    }),
-    onSuccess: (r) => { setBulkResult(r); qc.invalidateQueries({ queryKey: ["mailboxes", ws] }); },
-    onError: (e: Error) => toast(e.message, "error"),
-  });
 
   // Clicking a provider navigates straight to Google/Microsoft. The button shows a loading state until the page leaves.
+  const providers = useQuery({ queryKey: ["auth-providers"], queryFn: () => api<{ google: boolean; microsoft: boolean }>("/v1/auth/providers"), staleTime: 60_000 });
   const [connecting, setConnecting] = useState<OAuthKind | null>(null);
   const [showOther, setShowOther] = useState(false);
   const connect = (p: OAuthKind) => { setConnecting(p); connectWithProvider(ws, p); };
@@ -413,7 +406,6 @@ function AddMailboxModal({ onClose }: { onClose: () => void }) {
     return () => window.removeEventListener("pageshow", reset);
   }, []);
 
-  if (bulkResult) return <BulkResultModal result={bulkResult} onClose={onClose} />;
   return (
     <Modal open onClose={onClose} title="Connect a new email account" subtitle="Choose your email provider to get started." icon={<Mail size={20} />} wide={!!provider} flush={!provider} footer={provider ? <>
       <button className="btn-ghost mr-auto" onClick={() => { setProvider(null); setTest(null); }}>Back</button>
@@ -422,9 +414,9 @@ function AddMailboxModal({ onClose }: { onClose: () => void }) {
     </> : undefined}>
       {!provider ? (
         <div className="px-5 py-6 space-y-3">
-          <ProviderButton provider="google" busy={connecting === "google"} disabled={!!connecting} onClick={() => connect("google")} />
-          <ProviderButton provider="microsoft" busy={connecting === "microsoft"} disabled={!!connecting} onClick={() => connect("microsoft")} />
-          <p className="text-xs text-ink-500 text-center pt-1">You'll sign in on Google's or Microsoft's own page and approve access. We never see your password.</p>
+          <ProviderButton provider="google" busy={connecting === "google"} disabled={!!connecting} unavailable={providers.data?.google === false} onClick={() => connect("google")} />
+          <ProviderButton provider="microsoft" busy={connecting === "microsoft"} disabled={!!connecting} unavailable={providers.data?.microsoft === false} onClick={() => connect("microsoft")} />
+          <p className="text-xs text-ink-500 text-center pt-1">Clicking Gmail or Outlook takes you straight to Google's or Microsoft's own sign-in page. You approve access there. We never see your password.</p>
           <div className="border-t border-ink-100 pt-3">
             <button className="w-full text-center text-sm text-ink-500 hover:text-ink-800 py-1.5" onClick={() => setShowOther((o) => !o)} aria-expanded={showOther}>
               {showOther ? "Hide other options" : "Other email provider (IMAP / SMTP)"}
@@ -432,20 +424,6 @@ function AddMailboxModal({ onClose }: { onClose: () => void }) {
             {showOther && (
               <div className="mt-2">
                 <ChooserRow icon={<Mail size={17} className="text-ink-600" />} title="Connect email (IMAP / SMTP)" onClick={() => setProvider("smtp")} />
-                <ChooserRow
-                  icon={<FileText size={17} className="text-ink-600" />}
-                  title="Bulk connect email (IMAP / SMTP)"
-                  sub={bulk.isPending ? "Testing each mailbox… this can take a minute" : undefined}
-                  right={
-                    <span className="flex items-center gap-4 text-sm font-medium text-ink-600">
-                      <button className="flex items-center gap-1.5 hover:text-ink-900" onClick={downloadSample}>Sample <Download size={15} /></button>
-                      <button className="flex items-center gap-1.5 hover:text-ink-900 disabled:opacity-50" disabled={bulk.isPending} onClick={() => fileRef.current?.click()}>
-                        {bulk.isPending ? "Uploading…" : "Upload CSV"} <Upload size={15} />
-                      </button>
-                      <input ref={fileRef} type="file" accept=".csv,text/csv" className="hidden" onChange={(e) => { const file = e.target.files?.[0]; if (file) bulk.mutate(file); e.target.value = ""; }} />
-                    </span>
-                  }
-                />
               </div>
             )}
           </div>
@@ -490,21 +468,6 @@ function AddMailboxModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-const BULK_SAMPLE = [
-  "email,from_name,password,smtp_host,smtp_port,imap_host,imap_port,daily_limit,username",
-  "alex@yourdomain.com,Alex Morgan,app-password-here,smtp.yourhost.com,465,imap.yourhost.com,993,30,",
-  "sam@yourdomain.com,Sam Lee,app-password-here,smtp.yourhost.com,587,imap.yourhost.com,993,30,",
-].join("\n");
-
-function downloadSample() {
-  const url = URL.createObjectURL(new Blob([BULK_SAMPLE], { type: "text/csv" }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "bulk-mailboxes-sample.csv";
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
 function ChooserRow({ icon, title, sub, onClick, right }: { icon: ReactNode; title: string; sub?: string; onClick?: () => void; right?: ReactNode }) {
   const inner = (
     <>
@@ -519,22 +482,6 @@ function ChooserRow({ icon, title, sub, onClick, right }: { icon: ReactNode; tit
   return onClick
     ? <button className="w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-ink-50" onClick={onClick}>{inner}</button>
     : <div className="w-full flex items-center gap-3 rounded-lg px-3 py-2.5">{inner}</div>;
-}
-
-function BulkResultModal({ result, onClose }: { result: { connected: number; failed: number; results: { row: number; email: string; ok: boolean; error?: string }[] }; onClose: () => void }) {
-  return (
-    <Modal open onClose={onClose} title="Bulk connect results" footer={<button className="btn-primary" onClick={onClose}>Done</button>}>
-      <p className="text-sm mb-3"><b className="text-emerald-700">{result.connected} connected</b>{result.failed > 0 && <> · <b className="text-red-600">{result.failed} failed</b></>}</p>
-      <div className="max-h-80 overflow-y-auto rounded-lg border border-ink-200 divide-y divide-ink-100">
-        {result.results.map((r) => (
-          <div key={r.row} className="flex items-start gap-2 px-3 py-2 text-sm">
-            {r.ok ? <CheckCircle2 size={16} className="text-emerald-600 mt-0.5 shrink-0" /> : <XCircle size={16} className="text-red-600 mt-0.5 shrink-0" />}
-            <div className="min-w-0"><div className="truncate">Row {r.row}: {r.email || "(no email)"}</div>{r.error && <div className="text-xs text-red-600 break-words">{r.error}</div>}</div>
-          </div>
-        ))}
-      </div>
-    </Modal>
-  );
 }
 
 function ProfileList({ onEdit }: { onEdit: (p: SenderProfile) => void }) {

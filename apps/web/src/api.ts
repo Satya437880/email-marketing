@@ -66,7 +66,7 @@ export interface SequenceDetail extends Pick<SequenceRow, "id" | "name" | "statu
   settings: SequenceSettings; steps: Step[]; senderProfileIds: string[]; contactCount: number;
 }
 
-export interface Label { id: string; name: string; color: string; system: boolean; countsAs: string; count: number }
+export interface Label { id: string; name: string; color: string; system: boolean; countsAs: string; count: number; unread?: number }
 
 export interface ThreadRow {
   id: string; subject: string; unread: boolean; lastMessageAt: string; reminderAt: string | null; labelId: string | null;

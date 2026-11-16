@@ -13,6 +13,10 @@ const SEND_ATTEMPTS = 3;
 const log = (msg: string, extra: Record<string, unknown> = {}) =>
   console.log(JSON.stringify({ t: new Date().toISOString(), msg, ...extra }));
 
+// A network hiccup (for example a mail server resetting a connection) must never stop sending: log it and carry on.
+process.on("uncaughtException", (e) => log("uncaught_exception", { error: String(e) }));
+process.on("unhandledRejection", (e) => log("unhandled_rejection", { error: String(e) }));
+
 const sendQueue = new Queue<SendJob>("send", { connection });
 const syncQueue = new Queue<{ mailboxId: string }>("sync", { connection });
 

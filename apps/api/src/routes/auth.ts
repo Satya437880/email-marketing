@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
+import { sendPlatformEmail } from "../accountMail";
 import { createSession, destroySession, hashPassword, requireUser, verifyPassword } from "../auth";
 import { body, HttpError } from "../http";
 
@@ -39,26 +40,23 @@ export async function authRoutes(app: FastifyInstance) {
     const code = String(randomInt(100000, 1000000));
     const now = new Date();
     await db.update(pendingSignups).set({ codeHash: hashCode(email, code), attempts: 0, expiresAt: new Date(now.getTime() + CODE_TTL_MS), lastSentAt: now }).where(eq(pendingSignups.email, email));
-    if (!systemMailConfigured()) {
-      // Local development only: no mail server is set, so the code is printed in the API log.
-      app.log.warn(`[dev] sign-up code for ${email}: ${code}`);
-      return;
-    }
-    try {
-      await sendSystemEmail({
-        to: email,
-        subject: `${code} is your verification code`,
-        text: `Hi ${name.split(" ")[0]},
+    const first = name.split(" ")[0]?.replace(/[<>&]/g, "") ?? "";
+    const result = await sendPlatformEmail({
+      to: email,
+      subject: `${code} is your verification code`,
+      text: `Hi ${first},
 
 Your verification code is ${code}. It expires in 10 minutes.
 
 If you did not try to create an account, ignore this email.`,
-        html: `<p>Hi ${name.split(" ")[0]?.replace(/[<>&]/g, "")},</p><p>Your verification code is</p><p style="font-size:28px;font-weight:700;letter-spacing:6px">${code}</p><p>It expires in 10 minutes. If you did not try to create an account, ignore this email.</p>`,
-      });
-    } catch (e) {
-      app.log.error(e, "sign-up code email failed");
+      html: `<p>Hi ${first},</p><p>Your verification code is</p><p style="font-size:28px;font-weight:700;letter-spacing:6px">${code}</p><p>It expires in 10 minutes. If you did not try to create an account, ignore this email.</p>`,
+    });
+    if (result === "failed") {
+      app.log.error(`sign-up code email to ${email} failed`);
       throw new HttpError(502, "email_send_failed", "We could not send the verification email. Check the address and try again.");
     }
+    // Nothing to send from at all (no sending account and no connected mailbox yet): local development prints the code in the API log.
+    if (result === "none") app.log.warn(`[dev] sign-up code for ${email}: ${code}`);
   }
 
   // Step 1: validate the details and email a code. No account exists yet.
@@ -67,8 +65,9 @@ If you did not try to create an account, ignore this email.`,
       name: z.string().trim().min(1).max(100),
       email: z.string().trim().toLowerCase().email(),
       password: z.string().min(8).max(200),
+      confirmPassword: z.string().max(200),
       company: z.string().trim().min(1).max(100).optional(),
-    }));
+    }).refine((v) => v.password === v.confirmPassword, { message: "The two passwords do not match", path: ["confirmPassword"] }));
     const exists = await db.query.users.findFirst({ where: eq(users.email, b.email) });
     if (exists) throw new HttpError(409, "email_taken", "An account with this email already exists");
     const prior = await db.query.pendingSignups.findFirst({ where: eq(pendingSignups.email, b.email) });

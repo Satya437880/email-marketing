@@ -263,7 +263,7 @@ export function RichBody({ html, onChange, editorKey, variables, placeholder, to
         )}
         {pic && !source && ref.current?.contains(pic) && (() => {
           const full = (ref.current?.clientWidth ?? 600) - 40;
-          const cur = Math.round(pic.getBoundingClientRect().width);
+          const cur = pic.offsetWidth;
           const btn = "grid place-items-center h-7 min-w-7 px-1.5 rounded-md text-xs font-medium text-ink-700 hover:bg-ink-100";
           return (
             <div ref={picBar} className="absolute z-20 flex items-center gap-0.5 card px-1 py-1 shadow-lg" style={{ top: Math.max(4, pic.offsetTop - 42), left: Math.max(4, pic.offsetLeft) }} onMouseDown={(e) => e.preventDefault()}>
