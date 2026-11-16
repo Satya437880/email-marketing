@@ -1,4 +1,5 @@
 import { addDnc, emitEvent, maybeCompleteSequence, sendReply } from "@outreach/core";
+import { replyOwnText } from "@outreach/mail";
 import { contacts, db, events, labels, mailboxes, messages, sequenceContacts, sequences, templates, threads } from "@outreach/db";
 import { and, asc, desc, eq, ilike, inArray, isNotNull, isNull, lte, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
@@ -50,12 +51,14 @@ export async function inboxRoutes(app: FastifyInstance) {
       id: threads.id, subject: threads.subject, unread: threads.unread, lastMessageAt: threads.lastMessageAt, reminderAt: threads.reminderAt,
       labelId: threads.labelId, sequenceId: threads.sequenceId, mailboxId: threads.mailboxId,
       contact: { id: contacts.id, email: contacts.email, firstName: contacts.firstName, lastName: contacts.lastName, companyName: contacts.companyName },
-      snippet: sql<string>`(select left(regexp_replace(m.body_text, '\s+', ' ', 'g'), 160) from messages m where m.thread_id = ${threads.id} and m.direction = 'in' order by m.sent_at desc limit 1)`,
+      snippet: sql<string>`(select left(m.body_text, 2000) from messages m where m.thread_id = ${threads.id} and m.direction = 'in' order by m.sent_at desc limit 1)`,
     }).from(threads).leftJoin(contacts, eq(contacts.id, threads.contactId)).where(where)
       .orderBy(q.view === "reminders" ? asc(threads.reminderAt) : desc(threads.lastMessageAt))
       .limit(q.pageSize).offset((q.page - 1) * q.pageSize);
     const [count] = await db.select({ n: sql<number>`count(*)::int` }).from(threads).leftJoin(contacts, eq(contacts.id, threads.contactId)).where(where);
-    return { items: rows, total: count?.n ?? 0 };
+    // The preview line is only what the person wrote, not the quoted email under it.
+    const items = rows.map((r) => ({ ...r, snippet: r.snippet ? replyOwnText(r.snippet).replace(/\s+/g, " ").slice(0, 160) : r.snippet }));
+    return { items, total: count?.n ?? 0 };
   });
 
   app.get("/v1/workspaces/:ws/threads/counts", async (req) => {

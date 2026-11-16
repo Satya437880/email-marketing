@@ -28,6 +28,8 @@
     --brand-500: 178 84 109; --brand-600: 125 45 64; --brand-700: 232 160 178; --brand-800: 242 190 203; --brand-900: 248 218 226;
   }
   html, body, #root { height: 100%; }
+  /* The whole app is drawn at 80% (everything 20% smaller). main.tsx applies the zoom to <body> and sizes it to fill the window. */
+  html { overflow: hidden; }
   input[type="checkbox"], input[type="radio"] { accent-color: rgb(var(--brand-600)); }
   body { @apply antialiased; background: rgb(var(--page)); color: rgb(var(--text)); font-feature-settings: "cv11", "ss01"; }
 }

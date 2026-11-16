@@ -8,6 +8,19 @@ export function cx(...c: (string | false | null | undefined)[]) {
 
 // A dropdown rendered in a portal with fixed positioning, so tables and cards with overflow:hidden can't clip it.
 // It opens upward when there isn't room below, and closes on outside click, Escape, scroll or resize.
+// The page is drawn with CSS zoom (see index.css). Browsers differ on whether measured positions already include it, so measure once.
+let scaleCache: number | null = null;
+function uiScale(): number {
+  if (scaleCache !== null) return scaleCache;
+  const probe = document.createElement("div");
+  probe.style.cssText = "position:fixed;left:100px;top:0;width:1px;height:1px;visibility:hidden";
+  document.body.appendChild(probe);
+  const f = probe.getBoundingClientRect().left / 100;
+  probe.remove();
+  scaleCache = f > 0.3 && f <= 1.01 ? f : 1;
+  return scaleCache;
+}
+
 export function PortalMenu({ trigger, children, className, align = "match", width = 224 }: {
   trigger: ReactNode;
   children: (close: () => void) => ReactNode;
@@ -23,11 +36,13 @@ export function PortalMenu({ trigger, children, className, align = "match", widt
   const place = () => {
     const r = wrap.current?.getBoundingClientRect();
     if (!r) return;
-    const w = align === "match" ? Math.max(r.width, 200) : width;
-    const left = Math.min(Math.max(8, align === "right" ? r.right - w : r.left), window.innerWidth - w - 8);
+    const f = uiScale();
+    const w = align === "match" ? Math.max(r.width / f, 200) : width;
+    const wScreen = w * f;
+    const left = Math.min(Math.max(8, align === "right" ? r.right - wScreen : r.left), window.innerWidth - wScreen - 8);
     const below = window.innerHeight - r.bottom;
     const up = below < 240 && r.top > below;
-    setPos({ left, width: w, ...(up ? { bottom: window.innerHeight - r.top + 4 } : { top: r.bottom + 4 }) });
+    setPos({ left: left / f, width: w, ...(up ? { bottom: (window.innerHeight - r.top + 4) / f } : { top: (r.bottom + 4) / f }) });
   };
 
   useEffect(() => {

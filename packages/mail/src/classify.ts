@@ -114,8 +114,19 @@ const MEETING_WORD = /(call|meeting|demo|chat|slot|time|calendar|invite)/i;
 const MEETING_BOOKED = /(\bbooked\b|\bscheduled\b|\bconfirmed\b|calendar invite|invite (sent|accepted)|accepted (your|the) invite|calendly\.com|cal\.com|see you (on|at|then)|looking forward to (speaking|talking|meeting|our (call|meeting|chat)))/i;
 const POSITIVE = /(\binterested\b|sounds (good|great|interesting|like)|\blove to\b|happy to (chat|talk|connect|jump|schedule|meet|learn)|let'?s (chat|talk|connect|schedule|set up|book|do)|send (me )?(more|over|some)? ?(info|details|information|pricing|a deck|the deck)|tell me more|can you (share|send|tell)|please call|call me|free (on|this|next|tomorrow)|available (on|this|next|tomorrow)|^\s*(yes|sure|ok(ay)?)\b)/im;
 
+// Only what the person wrote: everything from the quoted older email onwards ("On ... wrote:", "From: ... Sent: ...", "> " lines,
+// "-----Original Message-----", signatures sent from a phone) is cut off.
+export function replyOwnText(text: string): string {
+  const cut = text.search(/\r?\n[ \t]*>|\r?\n[ \t]*On .{0,200}wrote:|\r?\n[ \t]*-{2,}[ \t]*(original|forwarded) message|\r?\n[ \t]*From:[ \t]|\r?\n[ \t]*_{5,}|\r?\n[ \t]*Sent from my |\r?\n[ \t]*Get Outlook for /i);
+  let own = cut >= 0 ? text.slice(0, cut) : text;
+  // Some mail apps put the quote on the same line as the reply.
+  const inline = own.search(/\s(From:\s.{0,120}<[^>]+@[^>]+>|On [A-Z][a-z]{2},? .{0,160}wrote:)/);
+  if (inline >= 0) own = own.slice(0, inline);
+  return own.trim();
+}
+
 export function classifyReplyIntent(text: string): ReplyLabel | null {
-  const own = (text.split(/\n>|\nOn .+wrote:|\n-{2,}\s*(original|forwarded)|\nFrom:\s/i)[0] ?? text).slice(0, 1500);
+  const own = replyOwnText(text).slice(0, 1500);
   if (!own.trim()) return null;
   if (WRONG_CONTACT.test(own)) return "Wrong contact";
   if (NEGATIVE.test(own)) return "Negative";
