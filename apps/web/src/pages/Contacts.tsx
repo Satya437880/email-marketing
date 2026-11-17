@@ -40,7 +40,7 @@ function ContactList({ onImport }: { onImport: () => void }) {
   const [esp, setEsp] = useState("");
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [bulk, setBulk] = useState<"tag" | "add_to_sequence" | null>(null);
+  const [bulk, setBulk] = useState<"tag" | "untag" | "add_to_sequence" | null>(null);
   const [editing, setEditing] = useState<Contact | null>(null);
 
   useEffect(() => {
@@ -80,6 +80,7 @@ function ContactList({ onImport }: { onImport: () => void }) {
         <div className="flex flex-wrap items-center gap-2 px-4 py-2 bg-brand-50 border-b border-brand-100 text-sm">
           <span className="font-medium text-brand-800">{selected.size} selected</span>
           <button className="btn-secondary btn-sm" onClick={() => setBulk("tag")}><TagIcon size={14} /> Tag</button>
+          <button className="btn-secondary btn-sm" onClick={() => setBulk("untag")}><X size={14} /> Untag</button>
           <button className="btn-secondary btn-sm" onClick={() => setBulk("add_to_sequence")}>Add to sequence</button>
           <button className="btn-secondary btn-sm text-red-600" onClick={() => confirm(`Delete ${selected.size} contacts?`) && del.mutate()}><Trash2 size={14} /> Delete</button>
           <button className="btn-ghost btn-sm ml-auto" onClick={() => setSelected(new Set())}>Clear</button>
@@ -124,25 +125,26 @@ function ContactList({ onImport }: { onImport: () => void }) {
   );
 }
 
-function BulkModal({ action, ids, onClose, onDone }: { action: "tag" | "add_to_sequence"; ids: string[]; onClose: () => void; onDone: () => void }) {
+function BulkModal({ action, ids, onClose, onDone }: { action: "tag" | "untag" | "add_to_sequence"; ids: string[]; onClose: () => void; onDone: () => void }) {
   const ws = useWs();
   const toast = useToast();
   const [target, setTarget] = useState("");
-  const tags = useQuery({ queryKey: ["tags", ws], queryFn: () => api<Tag[]>(`/v1/workspaces/${ws}/tags`), enabled: action === "tag" });
+  const tags = useQuery({ queryKey: ["tags", ws], queryFn: () => api<Tag[]>(`/v1/workspaces/${ws}/tags`), enabled: action !== "add_to_sequence" });
   const seqs = useQuery({ queryKey: ["sequences", ws], queryFn: () => api<SequenceRow[]>(`/v1/workspaces/${ws}/sequences`), enabled: action === "add_to_sequence" });
   const run = useMutation({
-    mutationFn: () => api<{ affected: number; alreadyIn?: number }>(`/v1/workspaces/${ws}/contacts/bulk`, { body: { action, ids, ...(action === "tag" ? { tagId: target } : { sequenceId: target }) } }),
+    mutationFn: () => api<{ affected: number; alreadyIn?: number }>(`/v1/workspaces/${ws}/contacts/bulk`, { body: { action, ids, ...(action !== "add_to_sequence" ? { tagId: target } : { sequenceId: target }) } }),
     onSuccess: (r) => {
       if (action === "tag") toast(`Tagged ${r.affected} contact${r.affected === 1 ? "" : "s"}`);
+      else if (action === "untag") toast(`Removed the tag from ${r.affected} contact${r.affected === 1 ? "" : "s"}`);
       else toast([`Added ${r.affected} to the sequence`, r.alreadyIn ? `${r.alreadyIn} already in it` : ""].filter(Boolean).join(" · "));
       onDone();
       onClose();
     },
     onError: (e: Error) => toast(e.message, "error"),
   });
-  const options = action === "tag" ? (tags.data ?? []).map((t) => ({ id: t.id, name: t.name })) : (seqs.data ?? []).filter((s) => s.status !== "completed").map((s) => ({ id: s.id, name: s.name }));
+  const options = action !== "add_to_sequence" ? (tags.data ?? []).map((t) => ({ id: t.id, name: t.name })) : (seqs.data ?? []).filter((s) => s.status !== "completed").map((s) => ({ id: s.id, name: s.name }));
   return (
-    <Modal open onClose={onClose} title={action === "tag" ? "Tag contacts" : "Add to sequence"} footer={<><button className="btn-secondary" onClick={onClose}>Cancel</button><button className="btn-primary" disabled={!target} onClick={() => run.mutate()}>Apply</button></>}>
+    <Modal open onClose={onClose} title={action === "tag" ? "Tag contacts" : action === "untag" ? "Remove a tag from contacts" : "Add to sequence"} footer={<><button className="btn-secondary" onClick={onClose}>Cancel</button><button className="btn-primary" disabled={!target} onClick={() => run.mutate()}>Apply</button></>}>
       <select className="input" value={target} onChange={(e) => setTarget(e.target.value)}>
         <option value="">Choose…</option>
         {options.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
@@ -304,7 +306,7 @@ export function ImportModal({ onClose, onBack, sequenceId, source = "csv" }: { o
             </table>
           </div>
           {!hasEmail && <div className="text-sm text-red-600">Map one column to Email.</div>}
-          <div><label className="label">Tag these contacts</label><input className="input" value={newTag} onChange={(e) => setNewTag(e.target.value)} /></div>
+          <div><label className="label">Tag these contacts <span className="text-ink-400 font-normal">(optional, clear it to import without a tag)</span></label><input className="input" placeholder="No tag" value={newTag} onChange={(e) => setNewTag(e.target.value)} /></div>
         </div>
       )}
     </Modal>
@@ -386,7 +388,7 @@ function SingleContactModal({ onClose }: { onClose: () => void }) {
   const [tried, setTried] = useState(false);
 
   const emailOk = EMAIL_OK.test(f.email.trim());
-  const valid = emailOk && chosen.length > 0;
+  const valid = emailOk;
   const save = useMutation({
     mutationFn: () => api(`/v1/workspaces/${ws}/contacts`, {
       body: {
@@ -451,7 +453,7 @@ function SingleContactModal({ onClose }: { onClose: () => void }) {
           ) : <p className="text-sm text-ink-500 mb-2">No tags selected</p>}
           <div className="relative">
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-400" />
-            <input className={cx("input h-10 pl-9", tried && !chosen.length && "border-red-500")} placeholder="Enter tag name" value={tagQ}
+            <input className={cx("input h-10 pl-9", "")} placeholder="Add a tag (optional)" value={tagQ}
               onChange={(e) => setTagQ(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key !== "Enter") return;
@@ -466,7 +468,7 @@ function SingleContactModal({ onClose }: { onClose: () => void }) {
               </div>
             )}
           </div>
-          <p className={cx("text-xs mt-1.5", tried && !chosen.length ? "text-red-600" : "text-ink-500")}>Tags are required</p>
+          <p className="text-xs mt-1.5 text-ink-500">Tags are optional. You can skip this, or add or remove tags later.</p>
         </div>
       </div>
     </Modal>

@@ -151,7 +151,9 @@ export async function mailboxRoutes(app: FastifyInstance) {
         const hint = provider === "google"
           ? "If this is a Google Workspace account, ask your administrator to turn on IMAP and allow this app."
           : "Ask your Microsoft 365 administrator to enable Authenticated SMTP for this mailbox.";
-        return back(state.ws, { oauth_error: `You signed in as ${tokens.email}, but ${name} didn't allow mail access. ${hint}` });
+        // The server's own reason for each part, so the real cause is visible (these are error texts, never tokens).
+        const detail = [test.smtp.ok ? null : `Sending (SMTP): ${test.smtp.error}`, test.imap.ok ? null : `Reading replies (IMAP): ${test.imap.error}`].filter(Boolean).join(" ");
+        return back(state.ws, { oauth_error: `You signed in as ${tokens.email}, but ${name} didn't allow mail access. ${hint} ${detail}`.slice(0, 900) });
       }
       // Tokens are stored encrypted; the refresh token keeps the connection alive without asking the user again.
       const credentials = sealCredentials({

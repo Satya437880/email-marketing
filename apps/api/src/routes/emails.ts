@@ -130,6 +130,61 @@ export async function emailRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  // Several emails at once: delete them, or move the scheduled ones to the front of the queue.
+  app.post("/v1/workspaces/:ws/emails/bulk", async (req) => {
+    const b = body(req, z.object({
+      action: z.enum(["delete", "send-now"]),
+      items: z.array(z.object({ kind: z.enum(["scheduled", "sent"]), id: z.string().uuid() })).min(1).max(500),
+    }));
+    const workspaceId = wsId(req);
+    const scheduled = b.items.filter((i) => i.kind === "scheduled").map((i) => i.id);
+    const sent = b.items.filter((i) => i.kind === "sent").map((i) => i.id);
+    let done = 0;
+    if (b.action === "delete") {
+      if (scheduled.length) {
+        const r = await db.execute(sql`
+          update sequence_contacts set state = 'finished', next_step = null, next_run_at = null, due_at = null
+          where workspace_id = ${workspaceId} and id in ${scheduled} and state in ('queued', 'active', 'ooo') returning id
+        `) as unknown as { id: string }[];
+        done += r.length;
+      }
+      if (sent.length) {
+        const r = await db.execute(sql`delete from messages where workspace_id = ${workspaceId} and direction = 'out' and id in ${sent} returning id`) as unknown as { id: string }[];
+        done += r.length;
+      }
+    } else if (scheduled.length) {
+      const r = await db.execute(sql`
+        update sequence_contacts sc set next_run_at = now(), due_at = now()
+        from sequences s
+        where s.id = sc.sequence_id and s.status = 'active' and sc.workspace_id = ${workspaceId} and sc.id in ${scheduled}
+          and sc.state in ('queued', 'active') and sc.next_step is not null returning sc.id
+      `) as unknown as { id: string }[];
+      done += r.length;
+    }
+    return { ok: true, done, skipped: b.items.length - done };
+  });
+
+  // Delete a scheduled email: it is cancelled and that contact gets nothing more from the sequence.
+  app.delete("/v1/workspaces/:ws/emails/scheduled/:id", async (req) => {
+    const p = params(req, idParams);
+    const workspaceId = wsId(req);
+    const gone = await db.execute(sql`
+      update sequence_contacts set state = 'finished', next_step = null, next_run_at = null, due_at = null
+      where id = ${p.id} and workspace_id = ${workspaceId} and state in ('queued', 'active', 'ooo') returning id
+    `) as unknown as { id: string }[];
+    if (!gone.length) notFound("Scheduled email");
+    return { ok: true };
+  });
+
+  // Delete a sent email from the history. The copy the recipient already received is not affected.
+  app.delete("/v1/workspaces/:ws/emails/sent/:id", async (req) => {
+    const p = params(req, idParams);
+    const workspaceId = wsId(req);
+    const gone = await db.execute(sql`delete from messages where id = ${p.id} and workspace_id = ${workspaceId} and direction = 'out' returning id`) as unknown as { id: string }[];
+    if (!gone.length) notFound("Email");
+    return { ok: true };
+  });
+
   // Compose and send by hand, no sequence needed. Recipients are contacts picked in the Compose screen.
   app.post("/v1/workspaces/:ws/emails/send", async (req) => {
     const b = body(req, z.object({

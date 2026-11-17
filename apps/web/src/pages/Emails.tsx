@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Clock, Mail, Pencil, Search, Send } from "lucide-react";
+import { Clock, Mail, Pencil, Search, Send, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
@@ -59,8 +59,40 @@ export function EmailsPage() {
     onError: (e: Error) => toast(e.message, "error"),
   });
 
-  const pick = (t: typeof tab) => { setTab(t); setPage(1); };
+  const remove = useMutation({
+    mutationFn: (m: EmailItem) => api(`/v1/workspaces/${ws}/emails/${m.kind}/${m.id}`, { method: "DELETE" }),
+    onSuccess: () => { toast("Email deleted"); void qc.invalidateQueries({ queryKey: ["emails", ws] }); },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+  const askDelete = (m: EmailItem) => {
+    const msg = m.kind === "scheduled"
+      ? `Delete this scheduled email to ${m.email}? It will not be sent, and this contact gets no more emails from the sequence.`
+      : `Delete this sent email to ${m.email} from your history? The recipient keeps the copy they already received.`;
+    if (confirm(msg)) remove.mutate(m);
+  };
+
+  // Rows ticked for a bulk action, kept as "kind:id" so a scheduled and a sent email never clash.
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const keyOf = (m: EmailItem) => `${m.kind}:${m.id}`;
+  const bulk = useMutation({
+    mutationFn: (v: { action: "delete" | "send-now"; items: { kind: string; id: string }[] }) =>
+      api<{ done: number; skipped: number }>(`/v1/workspaces/${ws}/emails/bulk`, { body: v }),
+    onSuccess: (r, v) => {
+      toast(`${v.action === "delete" ? "Deleted" : "Moved to the front of the queue:"} ${r.done}${r.skipped ? ` (${r.skipped} skipped)` : ""}`);
+      setPicked(new Set());
+      void qc.invalidateQueries({ queryKey: ["emails", ws] });
+    },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+
+  const pick = (t: typeof tab) => { setTab(t); setPage(1); setPicked(new Set()); };
   const items = list.data?.items ?? [];
+  const allOnPage = items.length > 0 && items.every((m) => picked.has(keyOf(m)));
+  const toggleAll = () => setPicked(allOnPage ? new Set() : new Set(items.map(keyOf)));
+  const toggle = (m: EmailItem) => setPicked((p) => { const n = new Set(p); if (n.has(keyOf(m))) n.delete(keyOf(m)); else n.add(keyOf(m)); return n; });
+  const chosen = items.filter((m) => picked.has(keyOf(m)));
+  const chosenItems = chosen.map((m) => ({ kind: m.kind, id: m.id }));
+  const sendable = chosen.filter((m) => m.kind === "scheduled" && m.canSendNow);
 
   return (
     <div>
@@ -76,6 +108,23 @@ export function EmailsPage() {
           <input className="input pl-9" placeholder="Search emails" aria-label="Search emails" value={typed} onChange={(e) => { setTyped(e.target.value); setPage(1); }} />
         </div>
 
+        {chosen.length > 0 && (
+          <div className="flex flex-wrap items-center gap-3 mb-3 rounded-lg border border-brand-200 bg-brand-50 px-4 py-2.5">
+            <span className="text-sm font-medium">{chosen.length} selected</span>
+            {sendable.length > 0 && (
+              <button className="btn-secondary btn-sm" disabled={bulk.isPending}
+                onClick={() => { if (confirm(`Send ${sendable.length} email${sendable.length === 1 ? "" : "s"} now?`)) bulk.mutate({ action: "send-now", items: sendable.map((m) => ({ kind: m.kind, id: m.id })) }); }}>
+                <Send size={14} /> Send now ({sendable.length})
+              </button>
+            )}
+            <button className="btn-secondary btn-sm text-red-600" disabled={bulk.isPending}
+              onClick={() => { if (confirm(`Delete ${chosen.length} email${chosen.length === 1 ? "" : "s"}? Scheduled ones will not be sent (and those contacts get no more emails from their sequence). Sent ones are only removed from your history.`)) bulk.mutate({ action: "delete", items: chosenItems }); }}>
+              <Trash2 size={14} /> Delete ({chosen.length})
+            </button>
+            <button className="btn-ghost btn-sm ml-auto" onClick={() => setPicked(new Set())}>Clear selection</button>
+          </div>
+        )}
+
         <div className="card overflow-x-auto">
           {list.isLoading ? <div className="py-16 grid place-items-center"><Spinner /></div> : !items.length ? (
             <Empty icon={<Mail size={20} />} title={tab === "scheduled" ? "Nothing scheduled" : tab === "sent" ? "No emails sent yet" : "No emails yet"}
@@ -83,11 +132,12 @@ export function EmailsPage() {
           ) : (
             <table className="w-full min-w-[860px]">
               <thead>
-                <tr><th className="th">Recipient</th><th className="th">Status</th><th className="th">Date</th><th className="th">Sequence</th><th className="th">Message</th><th className="th text-right">Actions</th></tr>
+                <tr><th className="th w-10"><input type="checkbox" aria-label="Select all emails on this page" checked={allOnPage} onChange={toggleAll} /></th><th className="th">Recipient</th><th className="th">Status</th><th className="th">Date</th><th className="th">Sequence</th><th className="th">Message</th><th className="th text-right">Actions</th></tr>
               </thead>
               <tbody>
                 {items.map((m) => (
-                  <tr key={`${m.kind}-${m.id}`} className="hover:bg-ink-50/60">
+                  <tr key={`${m.kind}-${m.id}`} className={cx("hover:bg-ink-50/60", picked.has(keyOf(m)) && "bg-brand-50/60")}>
+                    <td className="td w-10"><input type="checkbox" aria-label={`Select email to ${m.email}`} checked={picked.has(keyOf(m))} onChange={() => toggle(m)} /></td>
                     <td className="td">
                       <div className="font-medium text-ink-900">{m.name || m.email}</div>
                       {m.name && <div className="text-xs text-ink-500">{m.email}</div>}
@@ -111,6 +161,9 @@ export function EmailsPage() {
                           <Send size={14} /> Send now
                         </button>
                       )}
+                      <button className="btn-secondary btn-sm ml-2 text-red-600" aria-label="Delete email" title="Delete this email" disabled={remove.isPending} onClick={() => askDelete(m)}>
+                        <Trash2 size={14} />
+                      </button>
                     </td>
                   </tr>
                 ))}
