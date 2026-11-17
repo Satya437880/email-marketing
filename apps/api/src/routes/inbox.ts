@@ -1,4 +1,4 @@
-import { addDnc, emitEvent, maybeCompleteSequence, sendReply } from "@outreach/core";
+import { addDnc, emitEvent, maybeCompleteSequence, renderSignature, sendReply } from "@outreach/core";
 import { replyOwnText } from "@outreach/mail";
 import { contacts, db, events, labels, mailboxes, messages, sequenceContacts, sequences, templates, threads } from "@outreach/db";
 import { and, asc, desc, eq, ilike, inArray, isNotNull, isNull, lte, notInArray, or, sql, type SQL } from "drizzle-orm";
@@ -125,12 +125,31 @@ export async function inboxRoutes(app: FastifyInstance) {
       cc: z.array(z.string().email()).max(10).optional(),
       bcc: z.array(z.string().email()).max(10).optional(),
       mailboxId: z.string().uuid().optional(),
+      signatureIncluded: z.boolean().optional(),
+      attachments: z.array(z.object({ name: z.string().min(1).max(200), type: z.string().max(150).default("application/octet-stream"), data: z.string().max(15_000_000) })).max(5).optional(),
     }));
     try {
-      return await sendReply({ workspaceId: wsId(req), threadId: p.id, bodyHtml: b.bodyHtml, includeHistory: b.includeHistory, cc: b.cc, bcc: b.bcc, via: b.mailboxId });
+      return await sendReply({ workspaceId: wsId(req), threadId: p.id, bodyHtml: b.bodyHtml, includeHistory: b.includeHistory, cc: b.cc, bcc: b.bcc, via: b.mailboxId, signatureIncluded: b.signatureIncluded, attachments: b.attachments });
     } catch (e) {
       throw new HttpError(400, "send_failed", (e as Error).message);
     }
+  });
+
+  // What the reply box needs: who the reply goes to, the mailboxes it can be sent from, and each mailbox's signature ready to place in the text.
+  app.get("/v1/workspaces/:ws/threads/:id/reply-info", async (req) => {
+    const p = params(req, idParams);
+    const workspaceId = wsId(req);
+    const thread = await db.query.threads.findFirst({ where: and(eq(threads.id, p.id), eq(threads.workspaceId, workspaceId)) });
+    if (!thread) notFound("Thread");
+    const [lastInbound] = await db.select({ from: messages.fromAddress }).from(messages)
+      .where(and(eq(messages.threadId, thread.id), eq(messages.direction, "in"))).orderBy(desc(messages.sentAt)).limit(1);
+    const contact = thread.contactId ? await db.query.contacts.findFirst({ where: eq(contacts.id, thread.contactId), columns: { email: true } }) : undefined;
+    const boxes = await db.select().from(mailboxes).where(and(eq(mailboxes.workspaceId, workspaceId), eq(mailboxes.status, "active"))).orderBy(asc(mailboxes.email));
+    return {
+      to: lastInbound?.from ?? contact?.email ?? "",
+      defaultMailboxId: thread.mailboxId,
+      mailboxes: boxes.map((m) => ({ id: m.id, email: m.email, fromName: m.fromName, signatureHtml: renderSignature(m, `${thread.id}:reply`) ?? "" })),
+    };
   });
 
   app.post("/v1/workspaces/:ws/threads/:id/dnc", async (req) => {

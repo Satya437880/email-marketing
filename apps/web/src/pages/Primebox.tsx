@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, type Label, type Paged, type SenderProfile, type ThreadDetail, type ThreadRow } from "../api";
 import { useMe, useWs } from "../App";
+import { ReplyComposer } from "./ReplyComposer";
 import { Avatar, cx, Empty, fmtDate, Modal, SafeHtml, Spinner, Toggle, useToast } from "../ui";
 import { activeFilterCount, EMPTY_FILTERS, FiltersButton, filtersToQuery, type InboxFilters } from "./PrimeboxFilters";
 
@@ -43,6 +44,14 @@ export function PrimeboxPage() {
   const counts = useQuery({ queryKey: ["thread-counts", ws], queryFn: () => api<{ all: number; unread: number; none: number; reminders: number }>(`/v1/workspaces/${ws}/threads/counts`), refetchInterval: 15_000 });
   const profiles = useQuery({ queryKey: ["sender-profiles", ws], queryFn: () => api<SenderProfile[]>(`/v1/workspaces/${ws}/sender-profiles`) });
   const filterQs = filtersToQuery(filters, profiles.data ?? []);
+  // Tell the person when a new reply arrives, without them having to look.
+  const lastUnread = useRef<number | null>(null);
+  useEffect(() => {
+    const n = counts.data?.unread;
+    if (n === undefined) return;
+    if (lastUnread.current !== null && n > lastUnread.current) toast(`${n - lastUnread.current} new repl${n - lastUnread.current === 1 ? "y" : "ies"} received`);
+    lastUnread.current = n;
+  }, [counts.data?.unread]); // eslint-disable-line react-hooks/exhaustive-deps
   const list = useQuery({
     queryKey: ["threads", ws, label, view, search, filterQs],
     queryFn: () => api<Paged<ThreadRow>>(`/v1/workspaces/${ws}/threads?view=${view}${label ? `&label=${label}` : ""}${search ? `&q=${encodeURIComponent(search)}` : ""}${filterQs ? `&${filterQs}` : ""}`),
@@ -375,10 +384,9 @@ function ThreadView({ id, labels, onBack }: { id: string; labels: Label[]; onBac
   const qc = useQueryClient();
   const toast = useToast();
   const [composer, setComposer] = useState(false);
-  const [body, setBody] = useState("");
-  const [history, setHistory] = useState(true);
   const [reminder, setReminder] = useState(false);
-  const thread = useQuery({ queryKey: ["thread", ws, id], queryFn: () => api<ThreadDetail>(`/v1/workspaces/${ws}/threads/${id}`) });
+  // A new reply in the open conversation appears by itself.
+  const thread = useQuery({ queryKey: ["thread", ws, id], queryFn: () => api<ThreadDetail>(`/v1/workspaces/${ws}/threads/${id}`), refetchInterval: 15_000 });
 
   useEffect(() => {
     if (thread.data) {
@@ -400,13 +408,6 @@ function ThreadView({ id, labels, onBack }: { id: string; labels: Label[]; onBac
     mutationFn: (b: Record<string, unknown>) => api(`/v1/workspaces/${ws}/threads/${id}`, { method: "PATCH", body: b }),
     onSuccess: refresh,
   });
-  const send = useMutation({
-    mutationFn: () => api(`/v1/workspaces/${ws}/threads/${id}/reply`, {
-      body: { bodyHtml: body.split(/\n{2,}/).map((p) => `<p>${p.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/\n/g, "<br>")}</p>`).join(""), includeHistory: history },
-    }),
-    onSuccess: () => { setBody(""); setComposer(false); toast("Reply sent"); refresh(); },
-    onError: (e: Error) => toast(e.message, "error"),
-  });
   const dnc = useMutation({
     mutationFn: () => api(`/v1/workspaces/${ws}/threads/${id}/dnc`, { body: { scope: "email" } }),
     onSuccess: () => toast("Added to do-not-contact; active sequences stopped"),
@@ -419,6 +420,11 @@ function ThreadView({ id, labels, onBack }: { id: string; labels: Label[]; onBac
   if (thread.isLoading || !thread.data) return <Spinner />;
   const t = thread.data;
   const contactName = t.contact ? `${t.contact.firstName} ${t.contact.lastName}`.trim() || t.contact.email : "Unknown";
+  // How many emails we sent in this conversation, who they went to, and how many replies came back.
+  const sentMsgs = t.messages.filter((m) => m.direction === "out");
+  const replyCount = t.messages.length - sentMsgs.length;
+  const sentTo = [...new Set(sentMsgs.map((m) => m.toAddress))];
+  const sentNumber = new Map(sentMsgs.map((m, k) => [m.id, k + 1]));
 
   return (
     <div className="flex flex-col h-full">
@@ -441,6 +447,12 @@ function ThreadView({ id, labels, onBack }: { id: string; labels: Label[]; onBac
           {t.sequence && <span>Sequence: {t.sequence.name}</span>}
           <span>Mailbox: {t.mailbox?.email}</span>
           {t.reminderAt && <span className="text-amber-700">Reminder {fmtDate(t.reminderAt, true)}</span>}
+        </div>
+        <div className="mt-3 max-w-3xl flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-ink-200 bg-ink-50/60 px-3 py-2 text-xs text-ink-700" data-testid="thread-summary">
+          <span><b className="text-ink-900">{sentMsgs.length}</b> email{sentMsgs.length === 1 ? "" : "s"} sent</span>
+          <span>to <b className="text-ink-900">{sentTo.length ? sentTo.join(", ") : (t.contact?.email ?? "-")}</b></span>
+          <span>from <b className="text-ink-900">{t.mailbox?.email}</b></span>
+          <span><b className="text-ink-900">{replyCount}</b> repl{replyCount === 1 ? "y" : "ies"} received</span>
         </div>
         <div className="max-w-3xl">
           {/* Newest first: the reply you need to answer is on top, the rest of the thread is underneath. */}
@@ -468,12 +480,13 @@ function ThreadView({ id, labels, onBack }: { id: string; labels: Label[]; onBac
                     <div className="flex items-center gap-1.5 text-sm">
                       <span className="font-medium text-ink-800 truncate">{from}</span>
                       {i === 0 && m.direction === "in" && <span className="chip bg-brand-50 text-brand-700 shrink-0">Latest reply</span>}
+                      {m.direction === "out" && <span className="chip bg-ink-100 text-ink-600 shrink-0">Sent {sentNumber.get(m.id)} of {sentMsgs.length}</span>}
                       <ChevronRight size={12} className="text-ink-400 shrink-0" />
                       <Avatar name={toName} size={16} />
                       <span className="text-ink-600 truncate">{toName}</span>
                       <span className="ml-auto text-[11px] text-ink-400 shrink-0">{fmtDate(m.sentAt, true)}</span>
                     </div>
-                    <div className="text-xs text-ink-500 truncate">{m.fromAddress}</div>
+                    <div className="text-xs text-ink-500 truncate">{m.fromAddress}{m.direction === "out" && <> &rarr; {m.toAddress}</>}</div>
                     <div className={cx("mt-2.5 rounded-lg border overflow-hidden", m.direction === "in" ? "border-ink-200 bg-surface" : "border-brand-100 bg-surface")}>
                       {/* The message as it was written: fonts, spacing, links and the signature, not plain text. */}
                       {m.bodyHtml?.trim()
@@ -488,20 +501,7 @@ function ThreadView({ id, labels, onBack }: { id: string; labels: Label[]; onBac
         </div>
       </div>
       {composer && (
-        <div className="border-t border-ink-200 p-4 bg-ink-50/60">
-          <div className="card p-3">
-            <div className="text-xs text-ink-500 mb-2">To: {t.contact?.email} · via {t.mailbox?.email}</div>
-            <textarea className="textarea min-h-[140px] border-0 focus:ring-0 px-0" autoFocus placeholder="Write your reply…" value={body} onChange={(e) => setBody(e.target.value)} />
-            <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-ink-100">
-              <label className="flex items-center gap-2 text-xs text-ink-600"><input type="checkbox" checked={history} onChange={(e) => setHistory(e.target.checked)} /> Include thread history</label>
-              <span className="text-xs text-ink-400">{body.trim() ? body.trim().split(/\s+/).length : 0} words</span>
-              <div className="ml-auto flex gap-2">
-                <button className="btn-ghost btn-sm" onClick={() => setComposer(false)}>Cancel</button>
-                <button className="btn-primary btn-sm" disabled={!body.trim() || send.isPending} onClick={() => send.mutate()}>{send.isPending ? "Sending…" : "Send"}</button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <ReplyComposer threadId={id} messages={t.messages} onClose={() => setComposer(false)} onReminder={() => setReminder(true)} onSent={() => { setComposer(false); refresh(); }} />
       )}
       <ReminderModal open={reminder} onClose={() => setReminder(false)} current={t.reminderAt} onSave={(d) => { patch.mutate({ reminderAt: d }); setReminder(false); }} />
     </div>

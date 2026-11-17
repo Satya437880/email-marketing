@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, AlignCenter, AlignLeft, AlignRight, Bold, Braces, ChevronDown, Code, Image as ImageIcon, Italic, LayoutTemplate, Link as LinkIcon, Mail, Monitor, Paperclip, Redo2, RefreshCw, Send, Smartphone, Strikethrough, TableProperties, Trash2, Type, Underline, Undo2, X } from "lucide-react";
+import { AlertTriangle, AlignCenter, AlignLeft, AlignRight, Bold, Braces, ChevronDown, Code, Image as ImageIcon, Italic, LayoutTemplate, Link as LinkIcon, Mail, Monitor, Paperclip, Redo2, RefreshCw, Send, Smartphone, Smile, Strikethrough, TableProperties, Trash2, Type, Underline, Undo2, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api, type Attachment, type Contact, type Mailbox, type Paged } from "./api";
 import { useWs } from "./App";
@@ -71,11 +71,46 @@ function safeUrl(raw: string | null): string | null {
   }
 }
 
+const EMOJIS = ["😀", "😃", "😄", "😁", "😊", "🙂", "😉", "😍", "🤝", "👍", "👋", "🙏", "👏", "🎉", "🔥", "💡", "✅", "⭐", "📅", "📞", "📧", "💬", "🚀", "💼", "😅", "🤔", "😎", "🙌", "❤️", "👌", "✨", "📎"];
+
+// A small popover that opens under its button and closes on an outside click.
+function Pop({ button, children }: { button: (toggle: () => void, open: boolean) => ReactNode; children: (close: () => void) => ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: MouseEvent) => { if (!box.current?.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", away);
+    return () => document.removeEventListener("mousedown", away);
+  }, [open]);
+  return (
+    <div className="relative" ref={box} onMouseDown={(e) => { if ((e.target as HTMLElement).tagName !== "INPUT") e.preventDefault(); }}>
+      {button(() => setOpen((o) => !o), open)}
+      {open && <div className="absolute left-0 top-full mt-1 z-30 card shadow-lg">{children(() => setOpen(false))}</div>}
+    </div>
+  );
+}
+
+function GifBox({ onInsert }: { onInsert: (url: string) => void }) {
+  const [url, setUrl] = useState("");
+  const ok = /^https:\/\/\S+$/i.test(url.trim());
+  return (
+    <div className="w-72 p-3 space-y-2 text-sm">
+      <input autoFocus className="input h-9" placeholder="Paste the GIF link (https://…)" value={url} onChange={(e) => setUrl(e.target.value)} onKeyDown={(e) => e.key === "Enter" && ok && onInsert(url.trim())} />
+      <button type="button" className="btn-primary btn-sm w-full" disabled={!ok} onClick={() => onInsert(url.trim())}>Insert GIF</button>
+    </div>
+  );
+}
+
 // Rich-text area with Variables, bold, link, image, HTML source, undo/redo and a word count.
 // Content is loaded into the editable element only when editorKey changes, so typing never resets the caret.
-export function RichBody({ html, onChange, editorKey, variables, placeholder, toolbarStart, minHeight = 260, toolbarPosition = "top", onAttach }: {
+export function RichBody({ html, onChange, editorKey, variables, placeholder, toolbarStart, minHeight = 260, toolbarPosition = "top", onAttach, hideVariables, insertRef, replyBar }: {
   html: string; onChange: (html: string) => void; editorKey: string; variables: { v: string; l: string }[];
-  placeholder?: string; toolbarStart?: ReactNode; minHeight?: number; toolbarPosition?: "top" | "bottom"; onAttach?: () => void;
+  placeholder?: string; toolbarStart?: ReactNode; minHeight?: number; toolbarPosition?: "top" | "bottom"; onAttach?: () => void; hideVariables?: boolean;
+  // Lets the page around the editor insert text at the caret (for a Variables button that lives outside the toolbar).
+  insertRef?: React.MutableRefObject<((text: string) => void) | null>;
+  // The compact reply toolbar: alignment, bold, link, picture, GIF, emoji, HTML, undo/redo.
+  replyBar?: boolean;
 }) {
   const toast = useToast();
   const ref = useRef<HTMLDivElement>(null);
@@ -175,6 +210,9 @@ export function RichBody({ html, onChange, editorKey, variables, placeholder, to
     sync();
   };
   const insertVar = (v: string) => (source ? onChange(`${html}{{${v}}}`) : exec("insertText", `{{${v}}}`));
+  useEffect(() => {
+    if (insertRef) insertRef.current = (t: string) => (source ? onChange(`${html}${t}`) : exec("insertText", t));
+  });
   const text = html.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").trim();
   const words = text ? text.split(/\s+/).length : 0;
 
@@ -183,13 +221,24 @@ export function RichBody({ html, onChange, editorKey, variables, placeholder, to
     <div className={cx("flex flex-col", atBottom && "flex-1")}>
       <div ref={barRef} data-compact={compact} className={cx("flex flex-nowrap items-center gap-0.5 px-2 py-1.5 border-ink-100", atBottom ? "order-2 border-t" : "border-b")}>
         {toolbarStart}
-        <Dropdown up label="Variables" icon={<Braces size={15} />}>
+        {!hideVariables && <Dropdown up label="Variables" icon={<Braces size={15} />}>
           {(close) => variables.map((x) => (
             <button key={x.v} className={menuItem} onClick={() => { insertVar(x.v); close(); }}>{x.l ? <>{x.l} <span className="text-ink-400 text-xs">{`{{${x.v}}}`}</span></> : `{{${x.v}}}`}</button>
           ))}
-        </Dropdown>
-        <span className="w-px h-5 bg-ink-200 mx-1" />
-        <ToolButton title="Text formatting" active={showFormat} onClick={() => setShowFormat((v) => !v)}><Type size={16} /></ToolButton>
+        </Dropdown>}
+        {!hideVariables && <span className="w-px h-5 bg-ink-200 mx-1" />}
+        {replyBar ? (
+          <>
+            <Dropdown label="" icon={<AlignLeft size={16} />}>
+              {(close) => (<>
+                <button className={menuItem} onClick={() => { exec("justifyLeft"); close(); }}>Align left</button>
+                <button className={menuItem} onClick={() => { exec("justifyCenter"); close(); }}>Align centre</button>
+                <button className={menuItem} onClick={() => { exec("justifyRight"); close(); }}>Align right</button>
+              </>)}
+            </Dropdown>
+            <ToolButton title="Bold" onClick={() => exec("bold")}><Bold size={16} /></ToolButton>
+          </>
+        ) : <ToolButton title="Text formatting" active={showFormat} onClick={() => setShowFormat((v) => !v)}><Type size={16} /></ToolButton>}
         <div className="relative" ref={linkRef}>
           <ToolButton title="Insert link" active={linkOpen} onClick={openLink}><LinkIcon size={16} /></ToolButton>
           {linkOpen && (
@@ -213,6 +262,20 @@ export function RichBody({ html, onChange, editorKey, variables, placeholder, to
           const data = await new Promise<string>((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = () => rej(r.error); r.readAsDataURL(f); });
           exec("insertHTML", `<img src="${data}" alt="${f.name.replace(/[&<>"]/g, "")}" style="max-width:100%;height:auto">`);
         }} />
+        {replyBar && (
+          <>
+            <Pop button={(toggle, open) => <ToolButton title="Insert a GIF by link" active={open} onClick={toggle}><span className="text-[10px] font-bold leading-none">GIF</span></ToolButton>}>
+              {(close) => <GifBox onInsert={(url) => { exec("insertHTML", `<img src="${url.replace(/"/g, "%22")}" alt="GIF" style="max-width:100%;height:auto">`); close(); }} />}
+            </Pop>
+            <Pop button={(toggle, open) => <ToolButton title="Insert an emoji" active={open} onClick={toggle}><Smile size={16} /></ToolButton>}>
+              {(close) => (
+                <div className="grid grid-cols-8 gap-0.5 p-2 w-72">
+                  {EMOJIS.map((e) => <button key={e} type="button" className="h-8 w-8 rounded hover:bg-ink-100 text-lg" onMouseDown={(ev) => ev.preventDefault()} onClick={() => { exec("insertText", e); close(); }}>{e}</button>)}
+                </div>
+              )}
+            </Pop>
+          </>
+        )}
         {onAttach && <ToolButton title="Attach files" onClick={onAttach}><Paperclip size={16} /></ToolButton>}
         <ToolButton title="Edit HTML" active={source} onClick={() => setSource((s) => !s)}><Code size={16} /></ToolButton>
         <span className="w-px h-5 bg-ink-200 mx-1" />
