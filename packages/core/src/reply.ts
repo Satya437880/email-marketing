@@ -1,8 +1,8 @@
 import { contacts, db, mailboxes, messages, threads } from "@outreach/db";
-import { composeEmail, escapeHtml, sendSmtp } from "@outreach/mail";
+import { composeEmail, escapeHtml, render, sendSmtp } from "@outreach/mail";
 import { and, desc, eq } from "drizzle-orm";
 import { connectionFor } from "./mailbox";
-import { renderSignature } from "./send";
+import { contactVariables, renderSignature } from "./send";
 
 export interface ReplyInput {
   workspaceId: string;
@@ -12,6 +12,9 @@ export interface ReplyInput {
   cc?: string[];
   bcc?: string[];
   via?: string;
+  // The editor already contains the signature (the person can see and edit it), so none is added on top.
+  signatureIncluded?: boolean;
+  attachments?: { name: string; type: string; data: string }[];
 }
 
 export async function sendReply(input: ReplyInput, now = new Date()) {
@@ -29,7 +32,8 @@ export async function sendReply(input: ReplyInput, now = new Date()) {
   const to = lastInbound?.fromAddress ?? contact?.email;
   if (!to) throw new Error("No recipient for this thread");
 
-  let body = input.bodyHtml;
+  // Variables such as {{first_name}} are filled in for the person receiving the reply.
+  let body = contact ? render(input.bodyHtml, contactVariables(contact, mailbox), { seed: `${thread.id}:${now.getTime()}`, html: true }) : input.bodyHtml;
   if (input.includeHistory && last) {
     const quoted = last.bodyHtml || `<pre>${escapeHtml(last.bodyText)}</pre>`;
     body += `<br><div>On ${last.sentAt.toUTCString()}, ${escapeHtml(last.fromName || last.fromAddress)} wrote:</div><blockquote style="margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-left:1ex">${quoted}</blockquote>`;
@@ -40,7 +44,8 @@ export async function sendReply(input: ReplyInput, now = new Date()) {
     to,
     subject: thread.subject,
     bodyHtml: body,
-    signatureHtml: renderSignature(mailbox, `${thread.id}:${now.getTime()}`),
+    attachments: input.attachments,
+    signatureHtml: input.signatureIncluded ? undefined : renderSignature(mailbox, `${thread.id}:${now.getTime()}`),
     plainText: false,
     thread: last ? { inReplyTo: last.messageIdHeader, references: [...last.references, last.messageIdHeader].slice(-10) } : undefined,
     cc: input.cc,

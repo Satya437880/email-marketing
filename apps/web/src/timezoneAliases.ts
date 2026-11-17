@@ -1,0 +1,26 @@
+// Time zone names browsers accept but leave out of their own list (older and alternative IANA names, plus the fixed Etc/GMT offsets).
+// The picker keeps only the ones the current browser understands.
+export const EXTRA_ZONES: string[] = [
+  "UTC", "GMT", "Greenwich", "Universal", "Zulu", "UCT", "Etc/UTC", "Etc/GMT",
+  "Asia/Kolkata", "Asia/Calcutta", "Asia/Kathmandu", "Asia/Katmandu", "Asia/Yangon", "Asia/Rangoon", "Asia/Ho_Chi_Minh", "Asia/Saigon",
+  "Asia/Dacca", "Asia/Thimbu", "Asia/Ulan_Bator", "Asia/Ashkhabad", "Asia/Macao", "Asia/Istanbul", "Asia/Tel_Aviv", "Asia/Ujung_Pandang",
+  "Asia/Chongqing", "Asia/Chungking", "Asia/Harbin", "Asia/Kashgar",
+  "Africa/Asmera", "Africa/Timbuktu",
+  "America/Argentina/Buenos_Aires", "America/Argentina/Catamarca", "America/Argentina/Cordoba", "America/Argentina/Jujuy", "America/Argentina/Mendoza",
+  "America/Buenos_Aires", "America/Catamarca", "America/Cordoba", "America/Indianapolis", "America/Jujuy", "America/Louisville", "America/Mendoza",
+  "America/Montreal", "America/Nuuk", "America/Santa_Isabel", "America/Shiprock", "America/Virgin",
+  "Antarctica/South_Pole", "Atlantic/Faeroe", "Atlantic/Jan_Mayen",
+  "Australia/ACT", "Australia/Canberra", "Australia/LHI", "Australia/NSW", "Australia/North", "Australia/Queensland", "Australia/South",
+  "Australia/Tasmania", "Australia/Victoria", "Australia/West", "Australia/Yancowinna",
+  "Brazil/Acre", "Brazil/DeNoronha", "Brazil/East", "Brazil/West",
+  "Canada/Atlantic", "Canada/Central", "Canada/Eastern", "Canada/Mountain", "Canada/Newfoundland", "Canada/Pacific", "Canada/Saskatchewan", "Canada/Yukon",
+  "Chile/Continental", "Chile/EasterIsland", "Mexico/BajaNorte", "Mexico/BajaSur", "Mexico/General",
+  "Europe/Belfast", "Europe/Kiev", "Europe/Kyiv", "Europe/Nicosia", "Europe/Tiraspol", "Europe/Uzhgorod", "Europe/Zaporozhye",
+  "Pacific/Enderbury", "Pacific/Kanton", "Pacific/Ponape", "Pacific/Samoa", "Pacific/Truk", "Pacific/Yap",
+  "US/Alaska", "US/Aleutian", "US/Arizona", "US/Central", "US/East-Indiana", "US/Eastern", "US/Hawaii", "US/Indiana-Starke", "US/Michigan", "US/Mountain", "US/Pacific", "US/Samoa",
+  "Cuba", "Egypt", "Eire", "GB", "GB-Eire", "Hongkong", "Iceland", "Iran", "Israel", "Jamaica", "Japan", "Kwajalein", "Libya", "Navajo", "NZ", "NZ-CHAT", "PRC",
+  "Poland", "Portugal", "ROC", "ROK", "Singapore", "Turkey", "W-SU",
+  "EST", "MST", "HST", "EST5EDT", "CST6CDT", "MST7MDT", "PST8PDT", "CET", "EET", "MET", "WET",
+  "Etc/GMT+1", "Etc/GMT+2", "Etc/GMT+3", "Etc/GMT+4", "Etc/GMT+5", "Etc/GMT+6", "Etc/GMT+7", "Etc/GMT+8", "Etc/GMT+9", "Etc/GMT+10", "Etc/GMT+11", "Etc/GMT+12",
+  "Etc/GMT-1", "Etc/GMT-2", "Etc/GMT-3", "Etc/GMT-4", "Etc/GMT-5", "Etc/GMT-6", "Etc/GMT-7", "Etc/GMT-8", "Etc/GMT-9", "Etc/GMT-10", "Etc/GMT-11", "Etc/GMT-12", "Etc/GMT-13", "Etc/GMT-14",
+];

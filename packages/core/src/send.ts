@@ -104,12 +104,16 @@ export async function executeSend(job: SendJob, opts: { trackingBaseUrl: string;
 
   // A follow-up with an empty subject replies in the existing thread; anything else starts a new one.
   let thread = sc.threadId ? await db.query.threads.findFirst({ where: eq(threads.id, sc.threadId) }) : undefined;
-  const continueThread = !!thread && renderedSubject === "" && thread.mailboxId === mailbox.id;
+  const continueThread = !!thread && renderedSubject === "";
   let threadHeaders: { inReplyTo: string; references: string[] } | undefined;
+  let quote: { html: string; text: string; from: string; sentAt: Date } | undefined;
   if (continueThread && thread) {
-    const prior = await db.select({ mid: messages.messageIdHeader, refs: messages.references })
-      .from(messages).where(eq(messages.threadId, thread.id)).orderBy(desc(messages.sentAt)).limit(1);
-    if (prior[0]) threadHeaders = { inReplyTo: prior[0].mid, references: [...prior[0].refs, prior[0].mid].slice(-10) };
+    const prior = await db.select({ mid: messages.messageIdHeader, refs: messages.references, html: messages.bodyHtml, text: messages.bodyText, name: messages.fromName, addr: messages.fromAddress, at: messages.sentAt })
+      .from(messages).where(and(eq(messages.threadId, thread.id), eq(messages.direction, "out"))).orderBy(desc(messages.sentAt)).limit(1);
+    if (prior[0]) {
+      threadHeaders = { inReplyTo: prior[0].mid, references: [...prior[0].refs, prior[0].mid].slice(-10) };
+      quote = { html: prior[0].html, text: prior[0].text, from: `${prior[0].name} <${prior[0].addr}>`.trim(), sentAt: prior[0].at };
+    }
   }
   const subject = continueThread && thread ? thread.subject : renderedSubject || "(no subject)";
 
@@ -127,6 +131,7 @@ export async function executeSend(job: SendJob, opts: { trackingBaseUrl: string;
     openPixelUrl: settings.trackOpens ? `${base}/t/o/${token}` : null,
     clickRewrite: settings.trackClicks ? (u) => `${base}/t/c/${token}?u=${encodeURIComponent(u)}` : null,
     thread: threadHeaders,
+    quote,
     cc: settings.cc.length ? settings.cc : undefined,
     bcc: settings.bcc.length ? settings.bcc : undefined,
   });

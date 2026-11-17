@@ -49,6 +49,37 @@ export async function rescheduleWaitingEmails(sequenceId: string, schedule: Send
   return changed;
 }
 
+// After the steps change (a new wait, a moved or removed step), emails still waiting are timed again from when the contact last got an
+// email (or from launch / when they were added), using the new waits, then placed in the next open window of the schedule.
+export async function retimeWaitingEmails(sequenceId: string, now = new Date()): Promise<number> {
+  const seq = await db.query.sequences.findFirst({ where: eq(sequences.id, sequenceId) });
+  if (!seq || seq.status !== "active") return 0;
+  const steps = await db.select().from(sequenceSteps).where(eq(sequenceSteps.sequenceId, sequenceId)).orderBy(asc(sequenceSteps.position));
+  const rows = await db.execute<{ id: string; current_step: number; next_step: number; next_run_at: Date; base: Date }>(sql`
+    select sc.id, sc.current_step, sc.next_step, sc.next_run_at,
+           coalesce((select max(m.sent_at) from messages m where m.sequence_id = sc.sequence_id and m.contact_id = sc.contact_id and m.direction = 'out'),
+                    greatest(coalesce(sq.launched_at, sc.created_at), sc.created_at)) as base
+    from sequence_contacts sc join sequences sq on sq.id = sc.sequence_id
+    where sc.sequence_id = ${sequenceId} and sc.state = 'active' and sc.next_step is not null and sc.next_run_at is not null
+  `) as unknown as { id: string; current_step: number; next_step: number; next_run_at: Date; base: Date }[];
+  let changed = 0;
+  for (const r of rows) {
+    const target = steps[r.next_step];
+    if (!target || target.type !== "email") continue;
+    let ms = 0;
+    for (let i = r.current_step + 1; i < r.next_step; i++) {
+      const st = steps[i]!;
+      if (st.type === "delay") ms += st.delayDays * 86400000 + (st.delayMinutes ?? 0) * 60000;
+    }
+    const dueAt = new Date(new Date(r.base).getTime() + ms);
+    const at = alignToWindow(new Date(Math.max(dueAt.getTime(), now.getTime())), seq.settings.schedule);
+    if (new Date(r.next_run_at).getTime() === at.getTime()) continue;
+    await db.update(sequenceContacts).set({ nextRunAt: at, dueAt, lastError: null }).where(and(eq(sequenceContacts.id, r.id), eq(sequenceContacts.state, "active")));
+    changed++;
+  }
+  return changed;
+}
+
 export class LaunchError extends Error {}
 
 export async function launchSequence(workspaceId: string, sequenceId: string): Promise<void> {

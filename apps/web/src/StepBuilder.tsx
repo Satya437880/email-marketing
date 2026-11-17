@@ -123,7 +123,7 @@ export function StepBuilder({ steps, onChange }: { steps: Step[]; onChange: (ste
 
   const addBlock = () => {
     const first = blocks.length === 0;
-    commit([...blocks, { waitMinutes: first ? 0 : 2 * 1440, name: first ? "Initial email" : "Follow-up email", variants: [{ label: "A", subject: "", bodyHtml: "", weight: 1 }] }]);
+    commit([...blocks, { waitMinutes: first ? 0 : 2 * 1440, name: first ? "Initial email" : `Follow-up ${blocks.length}`, variants: [{ label: "A", subject: "", bodyHtml: "", weight: 1 }] }]);
     setTab(blocks.length, 0);
   };
   const addVariant = (i: number) => {
@@ -150,7 +150,15 @@ export function StepBuilder({ steps, onChange }: { steps: Step[]; onChange: (ste
   };
 
   const connector = <div className="mx-auto h-5 w-px bg-ink-300" />;
-  const defaultName = (i: number) => (i === 0 ? "Initial email" : "Follow-up email");
+  // A follow-up that replies in the thread shows the subject of the email that started it: the nearest earlier step that has a subject.
+  const threadSubject = (i: number) => {
+    for (let j = i - 1; j >= 0; j--) {
+      const sub = blocks[j]?.variants[0]?.subject?.trim();
+      if (sub) return sub;
+    }
+    return "";
+  };
+  const defaultName = (i: number) => (i === 0 ? "Initial email" : `Follow-up ${i}`);
 
   // Steps stack as full-width cards joined by a vertical line. The open step shows its variant tabs, the draft and a live preview.
   return (
@@ -205,7 +213,7 @@ export function StepBuilder({ steps, onChange }: { steps: Step[]; onChange: (ste
                     <EmailEditor
                       embedded
                       canReply={i > 0}
-                      replySubject={blocks[i - 1]?.variants[0]?.subject}
+                      replySubject={threadSubject(i)}
                       stats={{ sent: b.sent ?? 0, waiting: b.waiting ?? 0 }}
                       editorKey={`${i}-${vi}-${b.id ?? "new"}`}
                       stepName={b.name}

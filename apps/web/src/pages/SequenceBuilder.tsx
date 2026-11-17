@@ -1,3 +1,4 @@
+import { TimezoneSelect } from "../TimezoneSelect";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft, Building2, CalendarClock, ChevronRight, Clock, DollarSign, Eye, FileText, Filter as Funnel, Forward, HelpCircle, Link2, LogOut, Mail, MailOpen, MessageSquareReply,
@@ -55,7 +56,7 @@ function SequenceEditor() {
   const saveSteps = useMutation({
     mutationFn: () => api(`/v1/workspaces/${ws}/sequences/${id}/steps`, {
       method: "PUT",
-      body: { steps: steps.map((s) => ({ id: s.id, type: s.type, name: s.name, delayDays: s.delayDays, delayMinutes: s.delayMinutes, variants: s.variants.map((v) => ({ id: v.id, label: v.label, subject: v.subject, bodyHtml: v.bodyHtml, weight: v.weight })) })) },
+      body: { steps: steps.map((s) => ({ id: s.id, type: s.type, name: s.name, delayDays: s.delayDays, delayMinutes: s.delayMinutes, variants: s.variants.map((v) => ({ id: v.id, label: v.label, subject: v.subject, bodyHtml: v.bodyHtml, weight: v.weight, attachments: v.attachments ?? [] })) })) },
     }),
     onSuccess: () => { setDirty(false); toast("Sequence saved"); refresh(); },
     onError: (e: Error) => toast(e.message, "error"),
@@ -520,8 +521,8 @@ function SendersTab({ sequence, onChange }: { sequence: SequenceDetail; onChange
           <div className="p-4">
             <div className="rounded-xl border border-ink-200 overflow-hidden">
               {([
-                [<UserCheck key="a" size={18} />, "Add rotation", () => setAdding("profiles")],
-                [<Mail key="b" size={18} />, "Select mailboxes", () => setAdding("mailboxes")],
+                [<UserCheck key="a" size={18} />, `Select an existing rotation${profiles.data?.length ? ` (${profiles.data.length})` : ""}`, () => setAdding("profiles")],
+                [<Mail key="b" size={18} />, "Select single mailboxes", () => setAdding("mailboxes")],
               ] as const).map(([icon, label, go]) => (
                 <button key={label} className="w-full flex items-center gap-3 px-4 py-3.5 text-left text-[15px] hover:bg-ink-50 border-b border-ink-100" onClick={go}>
                   <span className="w-5 grid place-items-center text-ink-600">{icon}</span><span className="flex-1">{label}</span><ChevronRight size={18} className="text-ink-400" />
@@ -554,9 +555,9 @@ function SendersTab({ sequence, onChange }: { sequence: SequenceDetail; onChange
 function PickProfilesModal({ profiles, initial, onClose, onSave, onCreate }: { profiles: SenderProfile[]; initial: string[]; onClose: () => void; onSave: (ids: string[]) => void; onCreate: () => void }) {
   const [sel, setSel] = useState<string[]>(initial);
   return (
-    <Modal open onClose={onClose} title="Add rotation" icon={<UserCheck size={20} />} footer={<>
+    <Modal open onClose={onClose} title="Select an existing rotation" icon={<UserCheck size={20} />} footer={<>
       <button className="btn-secondary" onClick={onClose}>Cancel</button>
-      <button className="btn-primary" onClick={() => onSave(sel)}>Add to sequence</button>
+      <button className="btn-primary" onClick={() => onSave(sel)}>Use selected rotations</button>
     </>}>
       {!profiles.length ? (
         <Empty icon={<UserCheck size={20} />} title="No rotations yet" text="A rotation groups mailboxes that send together." action={<button className="btn-primary" onClick={onCreate}><UserPlus size={16} /> Create new rotation</button>} />
@@ -741,8 +742,12 @@ const stable = (v: unknown): string => JSON.stringify(v, (_k, val) => (val && ty
 const withoutProduct = (x: SequenceSettings) => { const { language: _l, productId: _p, ...rest } = x; return rest; };
 
 function ScheduleDays({ schedule, onChange }: { schedule: SequenceSettings["schedule"]; onChange: (s: SequenceSettings["schedule"]) => void }) {
-  const apply = (days: number[], hours: Record<string, { start: string; end: string }>) => {
-    const act = days.map((d) => hours[String(d)] ?? { start: schedule.start, end: schedule.end });
+  const apply = (days: number[], changed: Record<string, { start: string; end: string }>) => {
+    // Every active day keeps its own saved hours. A day with no entry follows the shared start/end, and those move whenever any day changes,
+    // so without this one edit (say Monday) would silently change all the other days.
+    const hours: Record<string, { start: string; end: string }> = { ...changed };
+    for (const d of days) hours[String(d)] ??= hoursFor(schedule, d);
+    const act = days.map((d) => hours[String(d)]!);
     onChange({
       ...schedule, days, hours,
       start: act.length ? act.map((h) => h.start).sort()[0]! : schedule.start,
@@ -808,9 +813,6 @@ function SettingsTab({ sequence, onChange, section = "all", registerSave, onDirt
   const show = (g: "schedule" | "settings") => section === "all" || section === g;
   const dirty = stable(withoutProduct(st)) !== stable(withoutProduct(initial)) || priority !== sequence.priority
     || ccText.cc !== initial.cc.join(", ") || ccText.bcc !== initial.bcc.join(", ") || ccOn !== (initial.cc.length > 0 || initial.bcc.length > 0);
-  const zones = useMemo(() => {
-    try { return (Intl as unknown as { supportedValuesOf: (k: string) => string[] }).supportedValuesOf("timeZone"); } catch { return ["UTC"]; }
-  }, []);
   const parseList = (s: string) => s.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
   const save = useMutation({
     mutationFn: () => api(`/v1/workspaces/${ws}/sequences/${sequence.id}`, {
@@ -837,9 +839,7 @@ function SettingsTab({ sequence, onChange, section = "all", registerSave, onDirt
     <div className="max-w-5xl pb-20">
       <div className="card px-5 md:px-8">
         <SettingsRow title="Timezone" show={show("schedule")}>
-          <select className="input h-10" value={st.schedule.timezone} onChange={(e) => set("schedule", { ...st.schedule, timezone: e.target.value })}>
-            {zones.map((z) => <option key={z} value={z}>{tzLabel(z)}</option>)}
-          </select>
+          <TimezoneSelect className="h-10" value={st.schedule.timezone} onChange={(tz) => set("schedule", { ...st.schedule, timezone: tz })} />
           <p className="text-xs text-ink-500">Send windows are measured in this time zone.</p>
         </SettingsRow>
         {show("schedule") && <ScheduleDays schedule={st.schedule} onChange={(sc) => set("schedule", sc)} />}

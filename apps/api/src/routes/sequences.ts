@@ -1,4 +1,4 @@
-import { addContactsToSequence, contactVariables, launchSequence, LaunchError, connectionFor, renderSignature, rescheduleWaitingEmails } from "@outreach/core";
+import { addContactsToSequence, contactVariables, launchSequence, LaunchError, connectionFor, renderSignature, rescheduleWaitingEmails, retimeWaitingEmails } from "@outreach/core";
 import {
   contacts, db, DEFAULT_SEQUENCE_SETTINGS, labels, mailboxes, products, senderProfileMailboxes, senderProfiles, sequenceContacts, sequences, sequenceSenders, sequenceSteps, stepVariants,
   type SequenceSettings,
@@ -179,16 +179,11 @@ export async function sequenceRoutes(app: FastifyInstance) {
     const settings: SequenceSettings = structuredClone(DEFAULT_SEQUENCE_SETTINGS);
     settings.schedule.timezone = req.workspace!.timezone;
     const [seq] = await db.insert(sequences).values({ workspaceId: wsId(req), name: b.name, settings }).returning();
-    // Start with the shape most sequences use: an email, a 3-day wait, and a follow-up in the same thread.
-    const [s1, , s3] = await db.insert(sequenceSteps).values([
+    // Start with Step 1 only. Later steps appear when the user clicks "Add new step".
+    const [s1] = await db.insert(sequenceSteps).values([
       { sequenceId: seq!.id, position: 0, type: "email", name: "Initial email" },
-      { sequenceId: seq!.id, position: 1, type: "delay", delayDays: 3 },
-      { sequenceId: seq!.id, position: 2, type: "email", name: "Follow-up 1" },
     ]).returning();
-    await db.insert(stepVariants).values([
-      { stepId: s1!.id, label: "A", subject: "", bodyHtml: "" },
-      { stepId: s3!.id, label: "A", subject: "", bodyHtml: "" },
-    ]);
+    await db.insert(stepVariants).values([{ stepId: s1!.id, label: "A", subject: "", bodyHtml: "" }]);
     return seq;
   });
 
@@ -214,6 +209,8 @@ export async function sequenceRoutes(app: FastifyInstance) {
     // A new timezone, day or hour places every waiting email again.
     if (row && b.settings?.schedule && JSON.stringify(sortKeys(row.settings.schedule)) !== JSON.stringify(sortKeys(seq.settings.schedule))) {
       await rescheduleWaitingEmails(seq.id, row.settings.schedule);
+      // Then every waiting email is timed again from its last send using the current waits, so nothing keeps an old date.
+      await retimeWaitingEmails(seq.id);
     }
     return row;
   });
@@ -257,6 +254,8 @@ export async function sequenceRoutes(app: FastifyInstance) {
         where sequence_id = ${seq.id} and state in ('active', 'ooo') and next_step >= ${b.steps.length}
       `);
     });
+    // Waits changed on a running sequence: contacts already waiting are timed again.
+    await retimeWaitingEmails(seq.id);
     return loadSteps(seq.id);
   });
 

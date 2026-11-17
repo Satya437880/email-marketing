@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ban, Check, ChevronDown, Copy, Download, HelpCircle, KeyRound, Mail, Plus, Search, Settings as SettingsIcon, Trash2, User as UserIcon, UserPlus, UserX, Webhook } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { TimezoneSelect } from "../TimezoneSelect";
 import { api, ApiError, type Paged } from "../api";
 import { useMe, useWs } from "../App";
 import { cx, Empty, fmtDate, Modal, PageHeader, Pager, PortalMenu, Spinner, Toggle, useToast } from "../ui";
@@ -51,9 +52,6 @@ function WorkspaceTab() {
   const current = me.data?.workspaces.find((w) => w.slug === ws);
   const [name, setName] = useState(current?.name ?? "");
   const [timezone, setTimezone] = useState(current?.timezone ?? "UTC");
-  const zones = useMemo(() => {
-    try { return (Intl as unknown as { supportedValuesOf: (k: string) => string[] }).supportedValuesOf("timeZone"); } catch { return ["UTC"]; }
-  }, []);
   const save = useMutation({
     mutationFn: () => api(`/v1/workspaces/${ws}`, { method: "PATCH", body: { name, timezone } }),
     onSuccess: () => { toast("Workspace saved"); qc.invalidateQueries({ queryKey: ["me"] }); },
@@ -62,7 +60,7 @@ function WorkspaceTab() {
     <div className="card p-5 max-w-xl space-y-4">
       <div><label className="label">Workspace name</label><input className="input" value={name} onChange={(e) => setName(e.target.value)} /></div>
       <div><label className="label">Default time zone for new sequences</label>
-        <select className="input" value={timezone} onChange={(e) => setTimezone(e.target.value)}>{zones.map((z) => <option key={z}>{z}</option>)}</select>
+        <TimezoneSelect value={timezone} onChange={setTimezone} />
       </div>
       <div className="text-xs text-ink-500">Workspace URL: /{ws}</div>
       <button className="btn-primary" onClick={() => save.mutate()}>Save</button>

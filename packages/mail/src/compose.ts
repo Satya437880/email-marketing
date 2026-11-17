@@ -27,6 +27,8 @@ export interface ComposeInput {
   openPixelUrl?: string | null;
   clickRewrite?: ((url: string) => string) | null;
   thread?: { inReplyTo: string; references: string[] };
+  // The email being replied to, shown below the new text like a normal reply ("On <date>, <name> wrote:").
+  quote?: { html: string; text: string; from: string; sentAt: Date };
   cc?: string[];
   bcc?: string[];
   attachments?: { name: string; type: string; data: string }[];
@@ -81,6 +83,22 @@ export function composeEmail(input: ComposeInput): OutgoingEmail {
     html += `<img src="${escapeHtml(input.openPixelUrl)}" width="1" height="1" alt="" style="display:none">`;
   }
 
+  let text = htmlToText(html);
+  if (input.thread && input.quote) {
+    const q = input.quote;
+    // Show only what was written: drop the old opt-out line and tracking pixel, keep any older quoted messages.
+    const inner = q.html
+      .replace(/^[\s\S]*?line-height:1\.5">/i, "")
+      .replace(/<\/div><\/body><\/html>\s*$/i, "")
+      .replace(/<div style="margin:0;padding:0;font-size:10px[^>]*>[\s\S]*?<\/div>/gi, "")
+      .replace(/<img[^>]*display:none[^>]*>/gi, "")
+      .replace(/(<div style="margin:0;padding:0"><br><\/div>\s*)+$/i, "");
+    const when = new Intl.DateTimeFormat("en-US", { weekday: "short", year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "UTC", timeZoneName: "short" }).format(q.sentAt);
+    const lead = `On ${when}, ${q.from} wrote:`;
+    html += `${gap}<div style="margin:0;padding:0">${escapeHtml(lead)}</div><blockquote style="margin:0 0 0 0.8ex;border-left:1px solid #ccc;padding-left:1ex">${inner || escapeHtml(q.text)}</blockquote>`;
+    text += `\n\n${lead}\n${(inner ? htmlToText(inner) : q.text).trim().split("\n").map((l) => `> ${l}`).join("\n")}`;
+  }
+
   const headers: Record<string, string> = {};
   if (input.optOut) {
     if (optLocal) {
@@ -100,7 +118,7 @@ export function composeEmail(input: ComposeInput): OutgoingEmail {
     to: input.to,
     subject,
     html: input.plainText ? "" : wrapHtml(html),
-    text: htmlToText(html),
+    text,
     messageId: newMessageId(input.from.address),
     inReplyTo: input.thread?.inReplyTo,
     references: input.thread?.references,
