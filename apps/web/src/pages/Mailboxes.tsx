@@ -261,10 +261,14 @@ function EditMailboxModal({ mailbox, onClose, onSaved }: { mailbox: Mailbox; onC
         )}
 
         {tab === "provider" && (
-          !prov ? <Spinner /> : prov.authType === "oauth" ? (
-            <p className="text-sm text-ink-600">This mailbox is connected with {mailbox.provider === "microsoft" ? "Microsoft" : "Google"} sign-in, so there's no password or server to edit. If it stops working, remove it and connect it again.</p>
-          ) : (
+          !prov ? <Spinner /> : (
             <div className="space-y-4">
+              {prov.authType === "oauth" && (
+                <div className="rounded-lg border border-ink-200 bg-ink-50 px-3 py-2.5 text-sm text-ink-600">
+                  Connected with {mailbox.provider === "microsoft" ? "Microsoft" : "Google"} sign-in, so these details are shown for reference only and there is no password to change.
+                  If it stops working, use <b>Reconnect</b> on the mailbox list.
+                </div>
+              )}
               <div className="grid grid-cols-2 rounded-xl bg-ink-100 p-1">
                 {(["imap", "smtp"] as const).map((s) => (
                   <button key={s} className={cx("h-10 rounded-lg text-sm font-semibold", providerSide === s ? "bg-surface shadow-card" : "text-ink-500")} onClick={() => setProviderSide(s)}>{s.toUpperCase()} Settings</button>
@@ -274,19 +278,19 @@ function EditMailboxModal({ mailbox, onClose, onSaved }: { mailbox: Mailbox; onC
                 <h3 className="text-lg font-semibold">{providerSide.toUpperCase()}</h3>
                 <p className="text-sm text-ink-500">Configure {providerSide.toUpperCase()} Settings. The username and password are used for both IMAP and SMTP.</p>
               </div>
-              <div><label className="label">{providerSide.toUpperCase()} Username (optional)</label><input className="input h-10" value={prov.username} onChange={(e) => { setProv({ ...prov, username: e.target.value }); setProvDirty(true); }} /></div>
+              <div><label className="label">{providerSide.toUpperCase()} Username (optional)</label><input className="input h-10" disabled={prov.authType === "oauth"} value={prov.username} onChange={(e) => { setProv({ ...prov, username: e.target.value }); setProvDirty(true); }} /></div>
               <div>
                 <label className="label">{providerSide.toUpperCase()} Password (optional)</label>
                 <div className="relative">
-                  <input className="input h-10 pr-10" type={showPw ? "text" : "password"} placeholder="Leave blank to keep the current password" value={password} onChange={(e) => { setPassword(e.target.value); setProvDirty(true); }} />
+                  <input className="input h-10 pr-10" disabled={prov.authType === "oauth"} type={showPw ? "text" : "password"} placeholder={prov.authType === "oauth" ? "Not used (signed in with " + (mailbox.provider === "microsoft" ? "Microsoft" : "Google") + ")" : "Leave blank to keep the current password"} value={password} onChange={(e) => { setPassword(e.target.value); setProvDirty(true); }} />
                   <button className="absolute right-3 top-1/2 -translate-y-1/2 text-ink-400" aria-label={showPw ? "Hide password" : "Show password"} onClick={() => setShowPw((s) => !s)}>{showPw ? <EyeOff size={16} /> : <Eye size={16} />}</button>
                 </div>
               </div>
               {side && (
                 <div className="grid grid-cols-[1fr_140px] gap-3">
-                  <div><label className="label">{providerSide.toUpperCase()} Host</label><input className="input h-10" value={side.host} onChange={(e) => setSide({ host: e.target.value })} /></div>
-                  <div><label className="label">{providerSide.toUpperCase()} Port</label><input type="number" className="input h-10" value={side.port} onChange={(e) => setSide({ port: Number(e.target.value) })} /></div>
-                  <label className="flex items-center gap-2 text-sm col-span-2"><input type="checkbox" checked={side.secure} onChange={(e) => setSide({ secure: e.target.checked })} /> Use SSL/TLS {providerSide === "smtp" && <span className="text-ink-500">(port 465; turn off for 587 STARTTLS)</span>}</label>
+                  <div><label className="label">{providerSide.toUpperCase()} Host</label><input className="input h-10" disabled={prov.authType === "oauth"} value={side.host} onChange={(e) => setSide({ host: e.target.value })} /></div>
+                  <div><label className="label">{providerSide.toUpperCase()} Port</label><input type="number" className="input h-10" disabled={prov.authType === "oauth"} value={side.port} onChange={(e) => setSide({ port: Number(e.target.value) })} /></div>
+                  <label className="flex items-center gap-2 text-sm col-span-2"><input type="checkbox" disabled={prov.authType === "oauth"} checked={side.secure} onChange={(e) => setSide({ secure: e.target.checked })} /> Use SSL/TLS {providerSide === "smtp" && <span className="text-ink-500">(port 465; turn off for 587 STARTTLS)</span>}</label>
                 </div>
               )}
               {provDirty && <p className="text-xs text-ink-500">When you click Update, we test the connection first and only save if both IMAP and SMTP work.</p>}
@@ -301,11 +305,6 @@ function EditMailboxModal({ mailbox, onClose, onSaved }: { mailbox: Mailbox; onC
               <div className="rounded-xl border border-ink-200 overflow-hidden">
                 <RichBody html={f.signatureHtml} onChange={(html) => setF((x) => ({ ...x, signatureHtml: html }))} editorKey={`sig-${mailbox.id}`} variables={SIGNATURE_VARIABLES} minHeight={160} placeholder="Name, title, company, phone…" />
               </div>
-            </div>
-            <div className="grid grid-cols-[110px_1fr] gap-x-4 gap-y-2 text-xs text-ink-500">
-              <span>Note</span><span>First and last name variables will be replaced with the actual names of the mailbox.</span>
-              <span>Good practices</span>
-              <span>Add job title, company name, and optionally website, address and phone number. Use spintax to vary your signature across emails, e.g. {"{{Client Partner|GTM Lead}}"}.</span>
             </div>
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={applyAll} onChange={(e) => setApplyAll(e.target.checked)} /> Use this signature on all mailboxes</label>
             <div className="inline-flex items-center gap-2 rounded-xl border border-ink-200 px-4 h-11 text-sm font-medium" title={spam?.issues.map((i) => i.message).join("\n") || "No problems found"}>

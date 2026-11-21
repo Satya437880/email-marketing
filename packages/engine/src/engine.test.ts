@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluate, nextEmailStep, orderDue, pickMailbox, pickVariant, type EvaluateInput, type MailboxCandidate } from "./planner";
+import { evaluate, nextEmailStep, nextUnsentEmailStep, orderDue, randomGapMs, pickMailbox, pickVariant, type EvaluateInput, type MailboxCandidate } from "./planner";
 import { alignToWindow, isInWindow, localDayKey, localParts, nextWindowStart, recalculateDue, type SendSchedule } from "./schedule";
 
 const toronto: SendSchedule = { timezone: "America/Toronto", days: [1, 2, 3, 4, 5], start: "08:00", end: "18:00" };
@@ -239,5 +239,35 @@ describe("sequence schedule timing", () => {
     const s: SendSchedule = { ...ist, hours: { "6": { start: "09:00", end: "12:00" } } };
     expect(local(alignToWindow(at("2026-11-14T07:00:00Z"), s))).toBe("Mon 08:00"); // Sat 12:30 IST, after Saturday's 12:00 close
     expect(local(alignToWindow(at("2026-11-13T18:00:00Z"), s))).toBe("Sat 09:00"); // Fri 23:30 IST -> Saturday opens 09:00
+  });
+});
+
+describe("nextUnsentEmailStep (new emails added to a finished sequence)", () => {
+  const now = new Date("2026-03-02T10:00:00Z");
+  const step = (id: string, type: "email" | "delay", days = 0) => ({ id, type, delayDays: days });
+
+  it("continues with an email added after the last one the contact received, after the wait before it", () => {
+    const steps = [step("a", "email"), step("w", "delay", 3), step("b", "email")];
+    expect(nextUnsentEmailStep(steps, 0, new Set(["a"]), now)).toEqual({ index: 2, dueAt: new Date(now.getTime() + 3 * 86400000) });
+  });
+  it("never repeats an email the contact already got, even if steps moved around", () => {
+    const steps = [step("a", "email"), step("x", "email"), step("b", "email")];
+    expect(nextUnsentEmailStep(steps, 0, new Set(["a", "b"]), now)).toEqual({ index: 1, dueAt: now });
+    expect(nextUnsentEmailStep(steps, 1, new Set(["a", "b"]), now)).toBeNull();
+  });
+  it("returns nothing when no new email follows", () => {
+    expect(nextUnsentEmailStep([step("a", "email"), step("w", "delay", 2)], 0, new Set(["a"]), now)).toBeNull();
+  });
+});
+
+describe("randomGapMs", () => {
+  it("never repeats the exact same gap when min and max are equal, and never goes below the minimum", () => {
+    const seen = new Set<number>();
+    for (let i = 0; i < 50; i++) { const g = randomGapMs(330, 330, () => (i + 0.5) / 50); expect(g).toBeGreaterThanOrEqual(330_000); seen.add(g); }
+    expect(seen.size).toBeGreaterThan(10);
+  });
+  it("leaves a normal range alone", () => {
+    expect(randomGapMs(180, 480, () => 0)).toBe(180_000);
+    expect(randomGapMs(180, 480, () => 1)).toBe(480_000);
   });
 });

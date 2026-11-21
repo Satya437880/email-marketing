@@ -1,6 +1,7 @@
 import { db, type SequenceSettings } from "@outreach/db";
 import { evaluate, localDayKey, orderDue, randomGapMs, type MailboxCandidate, type Provider } from "@outreach/engine";
 import { sql } from "drizzle-orm";
+import { syncLiveSequences } from "./sequences";
 import { dncMatches } from "./workspace";
 
 export interface SendJob {
@@ -54,6 +55,9 @@ const BATCH = 1000;
 export async function planTick(now = new Date()): Promise<{ jobs: SendJob[]; stats: Record<string, number> }> {
   const stats: Record<string, number> = { considered: 0, send: 0, reschedule: 0, stop: 0 };
   const jobs: SendJob[] = [];
+
+  // First make sure running sequences are up to date (new contacts scheduled, new emails picked up, completed ones reactivated).
+  await syncLiveSequences({ now, force: true }).catch(() => undefined);
 
   await db.transaction(async (tx) => {
     const [lock] = await tx.execute<{ ok: boolean }>(sql`select pg_try_advisory_xact_lock(${PLANNER_LOCK}) as ok`);
@@ -155,7 +159,8 @@ export async function planTick(now = new Date()): Promise<{ jobs: SendJob[]; sta
         inDnc: blocked.has(`${d.workspace_id}:${d.email.toLowerCase()}`),
         unsubscribed: !!d.unsubscribed_at,
         company: {
-          stopOnCompanyReply: s.stopOnCompanyReply && !!d.company_id,
+          // A reply only stops the person who replied. Stopping a whole company is done on purpose with the do-not-contact list (domain entry).
+          stopOnCompanyReply: false,
           companyHasReplied: !!d.company_replied_at && new Date(d.company_replied_at) > new Date(d.sc_created_at),
           sequentialWithinCompany: s.sequentialWithinCompany && !!d.company_id,
           otherContactInFlight: cc.inflight > 0,

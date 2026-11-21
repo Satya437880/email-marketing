@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { classifyInbound, classifyReplyIntent, extractReturnDate, replyOwnText } from "./classify";
 import { composeEmail } from "./compose";
+import { buildQuoteHistory } from "./history";
 import { espFromMx } from "./esp";
 import { htmlToText, listVariables, render } from "./render";
 import { spamCheck } from "./spam-check";
@@ -84,7 +85,7 @@ describe("compose", () => {
       clickRewrite: (u) => `https://t.acme.io/c?u=${encodeURIComponent(u)}`,
       thread: { inReplyTo: "<a@acme.io>", references: ["<a@acme.io>"] },
     });
-    expect(e.subject).toBe("Re: hello");
+    expect(e.subject).toBe("RE: hello");
     expect(e.html).toContain("https://t.acme.io/c?u=https%3A%2F%2Facme.io");
     expect(e.html).toContain('href="https://t.acme.io/u/abc"');
   });
@@ -178,5 +179,85 @@ describe("espFromMx", () => {
       optOut: { url: "https://t.acme.io/u/abc", text: "If you'd rather not hear from me, let me know" },
     });
     expect(e.text).toBe("Hey sarah,\n\nhow are you\n\nMara Johnson\nMaplempss\nIf you'd rather not hear from me, let me know here (https://t.acme.io/u/abc).");
+  });
+});
+
+describe("buildQuoteHistory (Outlook-style, newest first)", () => {
+  const at = (h: number) => new Date(Date.UTC(2026, 10, 18, h, 39));
+  const out = (n: number, body: string, subject = "Re: hi", quoted = ""): import("./history").HistoryMessage => ({
+    direction: "out", fromName: "Rachel McKay", fromAddress: "rachel@example.com", toAddress: "sam@example.org", subject, sentAt: at(n),
+    bodyHtml: `<!doctype html><html><body><div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.5">${body}<div style="margin:0;padding:0;font-size:10px;line-height:1.3;color:#888">opt out here.</div>${quoted}</div></body></html>`,
+    bodyText: body,
+  });
+  it("lists every earlier message as its own From / Sent / To / Subject block, newest to oldest", async () => {
+    const { buildQuoteHistory } = await import("./history");
+    const q = buildQuoteHistory([out(1, "one", "hi"), out(2, "two"), out(3, "three"), out(4, "four")], { timeZone: "America/Toronto" })!;
+    expect(q.preformatted).toBe(true);
+    expect(q.html.indexOf("four")).toBeLessThan(q.html.indexOf("three"));
+    expect(q.html.indexOf("three")).toBeLessThan(q.html.indexOf("two"));
+    expect(q.html.indexOf("two")).toBeLessThan(q.html.indexOf("one"));
+    expect((q.html.match(/<b>From:<\/b>/g) ?? []).length).toBe(4);
+    expect(q.html).toContain("<b>Subject:</b> RE: hi");
+    expect(q.html).not.toContain("blockquote");
+    expect(q.html).not.toContain("opt out");
+    expect(q.text).toContain("________________________________\nFrom: Rachel McKay\nSent: 17 November 2026 ");
+  });
+  it("shows the date like Outlook, in the sender's time zone", async () => {
+    const { formatSent } = await import("./history");
+    expect(formatSent(new Date(Date.UTC(2026, 10, 18, 15, 39)), "America/Toronto")).toBe("18 November 2026 10:39 AM");
+    expect(formatSent(new Date(Date.UTC(2026, 10, 18, 15, 39)), "Not/AZone")).toBe("18 November 2026 3:39 PM");
+  });
+  it("does not repeat history that an older email already carried inside itself", async () => {
+    const { buildQuoteHistory } = await import("./history");
+    const inner = `<hr data-quote style="border:0"><div><b>From:</b> Rachel McKay</div><div>one</div>`;
+    const q = buildQuoteHistory([out(1, "one", "hi"), out(2, "two", "Re: hi", inner)])!;
+    expect((q.html.match(/one/g) ?? []).length).toBe(1);
+  });
+  it("includes the contact's replies, cut off before their own quoted text", async () => {
+    const { buildQuoteHistory } = await import("./history");
+    const reply = { direction: "in" as const, fromName: "Sam", fromAddress: "sam@example.org", toAddress: "rachel@example.com", subject: "RE: hi", sentAt: at(2), bodyHtml: "", bodyText: "Sounds good\n\nOn Tue, Nov 17, 2026 Rachel wrote:\n> one" };
+    const q = buildQuoteHistory([out(1, "one", "hi"), reply, out(3, "three")])!;
+    expect(q.html).toContain("Sounds good");
+    expect((q.html.match(/one/g) ?? []).length).toBe(1);
+    expect(q.html).toContain("<b>From:</b> Sam");
+  });
+  it("is placed under the new message as it is, and the subject gets RE:", async () => {
+    const { buildQuoteHistory } = await import("./history");
+    const q = buildQuoteHistory([out(1, "one", "hi")])!;
+    const e = composeEmail({ from: { name: "R", address: "rachel@example.com" }, to: "sam@example.org", subject: "hi", bodyHtml: "<p>Hello</p>", plainText: false, thread: { inReplyTo: "<a@b>", references: ["<a@b>"] }, quote: q });
+    expect(e.subject).toBe("RE: hi");
+    expect(e.html.indexOf("Hello")).toBeLessThan(e.html.indexOf("<b>From:</b>"));
+    expect(e.html).not.toContain("wrote:");
+  });
+  it("returns nothing for an empty thread", async () => {
+    const { buildQuoteHistory } = await import("./history");
+    expect(buildQuoteHistory([])).toBeUndefined();
+  });
+});
+
+describe("reply-only opt-out (looks like a personal email)", () => {
+  const base = { from: { name: "A", address: "a@example.com" }, to: "b@example.org", subject: "Hi", bodyHtml: "<p>Hello</p>", plainText: false };
+  it("adds a plain line with no link and none of the headers that make mail apps show an Unsubscribe button", () => {
+    const e = composeEmail({ ...base, optOut: { url: "https://track.example.com/u/abc", text: "If you'd rather not hear from me, let me know", replyOnly: true } });
+    expect(e.html).toContain("just reply “unsubscribe”");
+    expect(e.html).not.toContain("track.example.com");
+    expect(e.headers["List-Unsubscribe"]).toBeUndefined();
+    expect(e.headers["List-Unsubscribe-Post"]).toBeUndefined();
+  });
+  it("still uses the one-click link and headers when reply-only is off", () => {
+    const e = composeEmail({ ...base, optOut: { url: "https://track.example.com/u/abc", text: "Let me know" } });
+    expect(e.html).toContain("https://track.example.com/u/abc");
+    expect(e.headers["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
+  });
+});
+
+describe("thread history spacing", () => {
+  it("drops empty blocks at the end of a quoted message and zeroes paragraph margins", () => {
+    const m = { direction: "out" as const, fromName: "A", fromAddress: "a@x.com", toAddress: "b@x.com", subject: "hi", sentAt: new Date(), bodyText: "",
+      bodyHtml: `<html><body><div style="line-height:1.5"><p>Business Development</p><p>&nbsp;</p><div><br></div><div style="margin:0;padding:0"><br></div></div></body></html>` };
+    const q = buildQuoteHistory([m])!;
+    expect(q.html).toContain('<p style="margin:0">Business Development</p>');
+    expect(q.html).not.toMatch(/&nbsp;<\/p>/);
+    expect(q.html).not.toMatch(/<br><\/div><\/div>\s*$/);
   });
 });

@@ -1,9 +1,9 @@
-import { addContactsToSequence, contactVariables, launchSequence, LaunchError, connectionFor, renderSignature, rescheduleWaitingEmails, retimeWaitingEmails } from "@outreach/core";
+import { addContactsToSequence, contactVariables, continueFinishedContacts, syncLiveSequences, launchSequence, LaunchError, connectionFor, renderSignature, rescheduleWaitingEmails, retimeWaitingEmails } from "@outreach/core";
 import {
   contacts, db, DEFAULT_SEQUENCE_SETTINGS, labels, mailboxes, products, senderProfileMailboxes, senderProfiles, sequenceContacts, sequences, sequenceSenders, sequenceSteps, stepVariants,
   type SequenceSettings,
 } from "@outreach/db";
-import { composeEmail, render, sendSmtp, spamCheck } from "@outreach/mail";
+import { buildQuoteHistory, composeEmail, type HistoryMessage, type Variables, render, sendSmtp, spamCheck } from "@outreach/mail";
 import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -26,7 +26,7 @@ const settingsSchema = z.object({
   oooBufferDays: z.number().int().min(0).max(30),
   plainText: z.boolean(),
   espMatching: z.boolean(),
-  optOut: z.object({ enabled: z.boolean(), text: z.string().trim().max(200) }),
+  optOut: z.object({ enabled: z.boolean(), text: z.string().trim().max(200), replyOnly: z.boolean().optional() }),
   trackOpens: z.boolean(),
   trackClicks: z.boolean(),
   cc: z.array(z.string().email()).max(5),
@@ -87,23 +87,59 @@ async function loadSteps(sequenceId: string) {
   }));
 }
 
+// Believable send times for emails that have not been sent yet (preview and test): working-day mornings and afternoons in the sender's time zone,
+// one to three days apart, ending before now.
+function sampleSendTimes(count: number, timeZone: string): Date[] {
+  const hourIn = (d: Date) => { try { return Number(new Intl.DateTimeFormat("en-GB", { timeZone, hour: "numeric", hourCycle: "h23" }).format(d)); } catch { return d.getUTCHours(); } };
+  const out: Date[] = [];
+  let day = Date.now();
+  for (let i = 0; i < count; i++) {
+    day -= (1 + Math.floor(Math.random() * 3)) * 864e5;
+    let t = new Date(day);
+    for (let k = 0; k < 60; k++) {
+      t = new Date(day - Math.floor(Math.random() * 864e5));
+      const h = hourIn(t);
+      if (h >= 9 && h < 17 && ![0, 6].includes(new Date(t.toLocaleString("en-US", { timeZone })).getDay())) break;
+    }
+    out.unshift(t);
+  }
+  return out;
+}
+
+// Rebuilds the thread above a follow-up from the drafts of the earlier steps, the way it would look once they had been sent.
+function earlierThread(o: { earlier: { subject: string; bodyHtml: string }[]; vars: Variables; seed: string; from: { name: string; address: string }; to: string; signatureHtml?: string; optOut: { url: string; text: string; replyOnly?: boolean } | null; timeZone?: string; contactName: string }) {
+  const names: Record<string, string> = { [o.from.address.toLowerCase()]: o.from.name, ...(o.contactName ? { [o.to.toLowerCase()]: o.contactName } : {}) };
+  const sentBefore: HistoryMessage[] = [];
+  let opener = "";
+  const times = sampleSendTimes(o.earlier.length, o.timeZone ?? "UTC");
+  for (const [n, e] of o.earlier.entries()) {
+    const sub = render(e.subject, o.vars, { seed: `${o.seed}:e${n}s` });
+    if (sub.trim()) opener = sub;
+    const sent = composeEmail({ from: o.from, to: o.to, subject: sub, bodyHtml: render(e.bodyHtml, o.vars, { seed: `${o.seed}:e${n}`, html: true }), signatureHtml: o.signatureHtml, plainText: false, keepDataImages: true, optOut: o.optOut, thread: n ? { inReplyTo: "x", references: [] } : undefined, quote: buildQuoteHistory(sentBefore, { timeZone: o.timeZone, names }) });
+    sentBefore.push({ direction: "out", fromName: o.from.name, fromAddress: o.from.address, toAddress: o.to, subject: sub.trim() || (n ? `RE: ${opener}` : ""), sentAt: times[n]!, bodyHtml: sent.html ?? "", bodyText: "" });
+  }
+  return { quote: sentBefore.length ? buildQuoteHistory(sentBefore, { timeZone: o.timeZone, names }) : undefined, opener };
+}
+
 export async function sequenceRoutes(app: FastifyInstance) {
   app.get("/v1/workspaces/:ws/sequences", async (req) => {
     const q = query(req, z.object({ q: z.string().optional(), status: z.string().optional() }));
     const workspaceId = wsId(req);
+    // The planner does this every 30 seconds anyway; the page does not need to wait for it.
+    void syncLiveSequences().catch(() => undefined);
     const rows = await db.select().from(sequences)
       .where(and(eq(sequences.workspaceId, workspaceId), q.q ? ilike(sequences.name, `%${q.q}%`) : undefined, q.status ? eq(sequences.status, q.status as "active") : undefined))
       .orderBy(desc(sequences.createdAt));
     if (!rows.length) return [];
     const ids = rows.map((r) => r.id);
-    const stats = await db.execute<{ sequence_id: string; contacts: number; done: number; contacted: number }>(sql`
+    const statsP = db.execute<{ sequence_id: string; contacts: number; done: number; contacted: number }>(sql`
       select sequence_id, count(*)::int as contacts,
              count(*) filter (where state not in ('queued', 'active', 'sending', 'ooo'))::int as done,
              count(*) filter (where current_step >= 0)::int as contacted
       from sequence_contacts where sequence_id in ${ids} group by sequence_id
-    `) as unknown as { sequence_id: string; contacts: number; done: number; contacted: number }[];
+    `);
     type Ev = { sequence_id: string; sent: number; replied: number; positive: number; bounced: number; opted_out: number; opened: number; clicked: number };
-    const ev = await db.execute<Ev>(sql`
+    const evP = db.execute<Ev>(sql`
       select s.id as sequence_id,
         count(*) filter (where e.type = 'sent')::int as sent,
         count(distinct e.contact_id) filter (where e.type = 'replied' and coalesce(e.meta->>'kind', 'reply') = 'reply')::int as replied,
@@ -115,10 +151,14 @@ export async function sequenceRoutes(app: FastifyInstance) {
       from sequences s left join events e on e.sequence_id = s.id
       where s.id in ${ids}
       group by s.id
-    `) as unknown as Ev[];
-    const senders = await db.select({ sequenceId: sequenceSenders.sequenceId, id: senderProfiles.id, name: senderProfiles.name })
+    `);
+    const sendersP = db.select({ sequenceId: sequenceSenders.sequenceId, id: senderProfiles.id, name: senderProfiles.name })
       .from(sequenceSenders).innerJoin(senderProfiles, eq(senderProfiles.id, sequenceSenders.senderProfileId))
       .where(inArray(sequenceSenders.sequenceId, ids));
+    // The three lookups do not depend on each other, so they run at the same time.
+    const [statsRaw, evRaw, senders] = await Promise.all([statsP, evP, sendersP]);
+    const stats = statsRaw as unknown as { sequence_id: string; contacts: number; done: number; contacted: number }[];
+    const ev = evRaw as unknown as Ev[];
     return rows.map((r) => {
       const s = stats.find((x) => x.sequence_id === r.id);
       const e = ev.find((x) => x.sequence_id === r.id);
@@ -141,13 +181,27 @@ export async function sequenceRoutes(app: FastifyInstance) {
   });
 
   app.get("/v1/workspaces/:ws/reports/sequence-contacts.csv", async (req, reply) => {
-    const q = query(req, z.object({ sequenceId: z.string().uuid().optional() }));
+    const q = query(req, z.object({ sequenceId: z.string().uuid().optional(), sequenceIds: z.string().optional(), filters: z.string().optional() }));
     const workspaceId = wsId(req);
+    const ids = (q.sequenceIds ?? "").split(",").map((x) => x.trim()).filter((x) => /^[0-9a-f-]{36}$/i.test(x));
+    // Filters are "any of": a contact is included if it matches at least one ticked filter. None ticked = everyone.
+    const seen = (type: string) => sql`exists (select 1 from events e where e.contact_id = sc.contact_id and e.sequence_id = sc.sequence_id and e.type = ${type})`;
+    const conds = {
+      replied: sql`(sc.state = 'replied' or ${seen("replied")})`,
+      opened: seen("opened"),
+      bounced: sql`(sc.state = 'bounced' or ${seen("bounced")})`,
+      ooo: sql`(sc.state = 'ooo' or ${seen("ooo")})`,
+      unsubscribed: sql`(sc.state = 'opted_out' or c.unsubscribed_at is not null)`,
+      dnc: sql`exists (select 1 from dnc_entries d where d.workspace_id = sc.workspace_id and ((d.type = 'email' and d.value = lower(c.email)) or (d.type = 'domain' and d.value = split_part(lower(c.email), '@', 2))))`,
+    } as const;
+    const wanted = (q.filters ?? "").split(",").map((x) => x.trim()).filter((x): x is keyof typeof conds => x in conds);
     const rows = await db.execute<Record<string, unknown>>(sql`
       select s.name as sequence, c.email, c.first_name, c.last_name, c.company_name, sc.state, sc.current_step + 1 as emails_sent,
              sc.next_run_at, c.last_contacted_at
       from sequence_contacts sc join sequences s on s.id = sc.sequence_id join contacts c on c.id = sc.contact_id
       where sc.workspace_id = ${workspaceId} ${q.sequenceId ? sql`and sc.sequence_id = ${q.sequenceId}` : sql``}
+        ${ids.length ? sql`and sc.sequence_id in (${sql.join(ids.map((i) => sql`${i}::uuid`), sql`, `)})` : sql``}
+        ${wanted.length ? sql`and (${sql.join(wanted.map((k) => conds[k]), sql` or `)})` : sql``}
       order by s.name, c.email limit 200000
     `) as unknown as Record<string, unknown>[];
     const cols = ["sequence", "email", "first_name", "last_name", "company_name", "state", "emails_sent", "next_run_at", "last_contacted_at"];
@@ -189,6 +243,7 @@ export async function sequenceRoutes(app: FastifyInstance) {
 
   app.get("/v1/workspaces/:ws/sequences/:id", async (req) => {
     const p = params(req, idParams);
+    await syncLiveSequences().catch(() => undefined);
     const seq = await owned(wsId(req), p.id);
     const senderRows = await db.select({ id: sequenceSenders.senderProfileId }).from(sequenceSenders).where(eq(sequenceSenders.sequenceId, seq.id));
     const [count] = await db.select({ n: sql<number>`count(*)::int` }).from(sequenceContacts).where(eq(sequenceContacts.sequenceId, seq.id));
@@ -256,6 +311,8 @@ export async function sequenceRoutes(app: FastifyInstance) {
     });
     // Waits changed on a running sequence: contacts already waiting are timed again.
     await retimeWaitingEmails(seq.id);
+    // New emails added: contacts who had already finished carry on with them.
+    await continueFinishedContacts(seq.id);
     return loadSteps(seq.id);
   });
 
@@ -311,6 +368,8 @@ export async function sequenceRoutes(app: FastifyInstance) {
     const p = params(req, idParams);
     try {
       await launchSequence(wsId(req), p.id);
+      await continueFinishedContacts(p.id);
+      await syncLiveSequences({ force: true });
     } catch (e) {
       if (e instanceof LaunchError) throw new HttpError(400, "cannot_launch", e.message);
       throw e;
@@ -442,7 +501,7 @@ export async function sequenceRoutes(app: FastifyInstance) {
 
   // Renders a step for one contact (or sample data) and scores it, for the editor's Preview tab.
   app.post("/v1/workspaces/:ws/preview", async (req) => {
-    const b = body(req, z.object({ subject: z.string().default(""), bodyHtml: z.string().default(""), replySubject: z.string().max(500).optional(), contactId: z.string().uuid().optional() }));
+    const b = body(req, z.object({ subject: z.string().default(""), bodyHtml: z.string().default(""), replySubject: z.string().max(500).optional(), earlier: z.array(z.object({ subject: z.string().default(""), bodyHtml: z.string().default("") })).max(20).optional(), contactId: z.string().uuid().optional() }));
     const workspaceId = wsId(req);
     const contact = b.contactId
       ? await db.query.contacts.findFirst({ where: and(eq(contacts.id, b.contactId), eq(contacts.workspaceId, workspaceId)) })
@@ -459,15 +518,21 @@ export async function sequenceRoutes(app: FastifyInstance) {
     const bodyHtml = render(b.bodyHtml, vars, { seed, html: true });
     // Preview what is actually sent: body + mailbox signature + opt-out line.
     const settings = DEFAULT_SEQUENCE_SETTINGS;
+    const optOut = settings.optOut.enabled ? { url: "#", text: settings.optOut.text, replyOnly: settings.optOut.replyOnly } : null;
+    const signatureHtml = mailbox ? renderSignature(mailbox, `${seed}:sig`) : undefined;
+    // Follow-up replying in the thread: the earlier steps are rebuilt (oldest first) as they would already have been sent, then quoted newest first.
+    const { quote } = subject.trim() ? { quote: undefined } : earlierThread({ earlier: b.earlier ?? [], vars, seed, from: { name: sender.fromName, address: sender.email }, to: contact?.email ?? "sample@example.com", signatureHtml, optOut, timeZone: mailbox?.timezone, contactName: contact ? `${contact.firstName} ${contact.lastName}`.trim() : "" });
     const html = bodyHtml.trim() ? composeEmail({
       from: { name: sender.fromName, address: sender.email },
       to: contact?.email ?? "sample@example.com",
       subject,
       bodyHtml,
-      signatureHtml: mailbox ? renderSignature(mailbox, `${seed}:sig`) : undefined,
+      signatureHtml,
       plainText: false,
       keepDataImages: true,
-      optOut: settings.optOut.enabled ? { url: "#", text: settings.optOut.text } : null,
+      optOut,
+      thread: quote ? { inReplyTo: "x", references: [] } : undefined,
+      quote,
     }).html : "";
     return { subject, replySubject, html, contact: contact ? { id: contact.id, email: contact.email } : null, spam: spamCheck(subject, html) };
   });
@@ -478,20 +543,31 @@ export async function sequenceRoutes(app: FastifyInstance) {
   });
 
   app.post("/v1/workspaces/:ws/send-test", async (req) => {
-    const b = body(req, z.object({ mailboxId: z.string().uuid(), to: z.string().email(), subject: z.string(), bodyHtml: z.string() }));
+    const b = body(req, z.object({ mailboxId: z.string().uuid(), to: z.string().email(), subject: z.string(), bodyHtml: z.string(), earlier: z.array(z.object({ subject: z.string().default(""), bodyHtml: z.string().default("") })).max(20).optional() }));
     const workspaceId = wsId(req);
     const mailbox = await db.query.mailboxes.findFirst({ where: and(eq(mailboxes.id, b.mailboxId), eq(mailboxes.workspaceId, workspaceId)) });
     if (!mailbox) notFound("Mailbox");
     const contact = await db.query.contacts.findFirst({ where: and(eq(contacts.workspaceId, workspaceId), eq(contacts.email, b.to.toLowerCase())) });
     const vars = contact ? contactVariables(contact, mailbox) : { first_name: "there", sender_name: mailbox.fromName };
     const seed = `test:${Date.now()}`;
+    // The test is built exactly like a real send (same subject, signature, reply-only opt-out line and thread), so it shows what the recipient gets.
+    // A follow-up (empty subject) with earlier steps is sent as a reply carrying the whole thread.
+    const signatureHtml = renderSignature(mailbox, seed);
+    const settings = DEFAULT_SEQUENCE_SETTINGS;
+    const optOut = settings.optOut.enabled ? { url: "#", text: settings.optOut.text, replyOnly: settings.optOut.replyOnly } : null;
+    const asReply = !b.subject.trim() && !!b.earlier?.length;
+    const ownSubject = render(b.subject, vars, { seed: `${seed}:s` }).trim() || "(follow-up)";
+    const thread = asReply ? earlierThread({ earlier: b.earlier!, vars, seed, from: { name: mailbox.fromName, address: mailbox.email }, to: b.to, signatureHtml, optOut, timeZone: mailbox.timezone, contactName: contact ? `${contact.firstName} ${contact.lastName}`.trim() : "" }) : undefined;
     const email = composeEmail({
       from: { name: mailbox.fromName, address: mailbox.email },
       to: b.to,
-      subject: `[Test] ${render(b.subject, vars, { seed: `${seed}:s` })}`,
+      subject: thread ? thread.opener.trim() : ownSubject,
       bodyHtml: render(b.bodyHtml, vars, { seed, html: true }),
-      signatureHtml: renderSignature(mailbox, seed),
+      signatureHtml,
       plainText: false,
+      optOut,
+      thread: thread?.quote ? { inReplyTo: `<test-${Date.now()}@${mailbox.email.split("@")[1]}>`, references: [] } : undefined,
+      quote: thread?.quote,
     });
     const c = await connectionFor(mailbox);
     await sendSmtp(c.server, c.auth, email);

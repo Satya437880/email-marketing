@@ -98,7 +98,10 @@ export function pickVariant<V extends Variant>(variants: V[], seed: string): V |
 
 export function randomGapMs(minSeconds: number, maxSeconds: number, rand: () => number = Math.random): number {
   const lo = Math.max(0, Math.min(minSeconds, maxSeconds));
-  const hi = Math.max(minSeconds, maxSeconds);
+  let hi = Math.max(minSeconds, maxSeconds);
+  // The same gap every time (for example exactly 5.5 minutes) looks like a machine, so a narrow range is spread out upwards.
+  // The minimum the mailbox is set to is never undercut.
+  if (hi - lo < lo * 0.5) hi = Math.round(lo * 1.5);
   return Math.round((lo + rand() * (hi - lo)) * 1000);
 }
 
@@ -120,6 +123,18 @@ export function nextEmailStep(steps: Step[], afterIndex: number, from: Date): { 
     const step = steps[i]!;
     if (step.type === "delay") ms += step.delayDays * 86400000 + (step.delayMinutes ?? 0) * 60000;
     else return { index: i, dueAt: new Date(from.getTime() + ms) };
+  }
+  return null;
+}
+
+// Like nextEmailStep, but never picks an email this contact has already been sent. Used when steps are added to a sequence that
+// contacts have finished: they carry on with the new emails, and a step that moved position is not sent twice.
+export function nextUnsentEmailStep(steps: Step[], afterIndex: number, sentStepIds: ReadonlySet<string>, from: Date): { index: number; dueAt: Date } | null {
+  let ms = 0;
+  for (let i = afterIndex + 1; i < steps.length; i++) {
+    const step = steps[i]!;
+    if (step.type === "delay") ms += step.delayDays * 86400000 + (step.delayMinutes ?? 0) * 60000;
+    else if (!sentStepIds.has(step.id)) return { index: i, dueAt: new Date(from.getTime() + ms) };
   }
   return null;
 }

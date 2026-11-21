@@ -1,5 +1,5 @@
 import { contacts, db, mailboxes, messages, threads } from "@outreach/db";
-import { composeEmail, escapeHtml, render, sendSmtp } from "@outreach/mail";
+import { buildQuoteHistory, composeEmail, render, sendSmtp } from "@outreach/mail";
 import { and, desc, eq } from "drizzle-orm";
 import { connectionFor } from "./mailbox";
 import { contactVariables, renderSignature } from "./send";
@@ -34,10 +34,8 @@ export async function sendReply(input: ReplyInput, now = new Date()) {
 
   // Variables such as {{first_name}} are filled in for the person receiving the reply.
   let body = contact ? render(input.bodyHtml, contactVariables(contact, mailbox), { seed: `${thread.id}:${now.getTime()}`, html: true }) : input.bodyHtml;
-  if (input.includeHistory && last) {
-    const quoted = last.bodyHtml || `<pre>${escapeHtml(last.bodyText)}</pre>`;
-    body += `<br><div>On ${last.sentAt.toUTCString()}, ${escapeHtml(last.fromName || last.fromAddress)} wrote:</div><blockquote style="margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-left:1ex">${quoted}</blockquote>`;
-  }
+  // The whole conversation, newest first, in the same Outlook style as sequence emails.
+  const history = input.includeHistory && last ? buildQuoteHistory(await db.select().from(messages).where(eq(messages.threadId, thread.id)), { timeZone: mailbox.timezone, names: { [mailbox.email.toLowerCase()]: mailbox.fromName, ...(contact ? { [contact.email.toLowerCase()]: `${contact.firstName} ${contact.lastName}`.trim() } : {}) } }) : undefined;
 
   const email = composeEmail({
     from: { name: mailbox.fromName, address: mailbox.email },
@@ -48,6 +46,7 @@ export async function sendReply(input: ReplyInput, now = new Date()) {
     signatureHtml: input.signatureIncluded ? undefined : renderSignature(mailbox, `${thread.id}:${now.getTime()}`),
     plainText: false,
     thread: last ? { inReplyTo: last.messageIdHeader, references: [...last.references, last.messageIdHeader].slice(-10) } : undefined,
+    quote: history,
     cc: input.cc,
     bcc: input.bcc,
   });

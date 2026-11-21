@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlarmClock, AlarmClockPlus, Ban, Bookmark, Bot, CalendarCheck, CheckCircle2, Check, ChevronDown, ChevronLeft, ChevronRight, Clock, Copy, HelpCircle, Inbox, Mail, MailOpen, MailX, Plane, Plus, Reply, Search, Tag, ThumbsDown, ThumbsUp, Trash2, UserX, type LucideIcon } from "lucide-react";
+import { AlarmClock, AlarmClockPlus, Ban, Bell, Bookmark, Briefcase, Building2, CircleHelp, DollarSign, Flag, Flame, Gift, Handshake, Heart, Hourglass, Lightbulb, Phone, Rocket, Save, Star, Target, Zap, Calendar, Bot, CalendarCheck, CheckCircle2, Check, ChevronDown, ChevronLeft, ChevronRight, Clock, Copy, HelpCircle, Inbox, Mail, MailOpen, MailX, Plane, Plus, Reply, Search, Tag, ThumbsDown, ThumbsUp, Trash2, UserX, type LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, type Label, type Paged, type SenderProfile, type ThreadDetail, type ThreadRow } from "../api";
@@ -81,6 +81,18 @@ export function PrimeboxPage() {
     onSuccess: () => { toast("Auto-label setting saved"); qc.invalidateQueries({ queryKey: ["me"] }); },
   });
 
+  // Labels you created can be deleted (the built-in ones can't). Conversations that had it go back to "No label".
+  const delLabel = useMutation({
+    mutationFn: (id: string) => api(`/v1/workspaces/${ws}/labels/${id}`, { method: "DELETE" }),
+    onSuccess: (_r, id) => {
+      toast("Label deleted");
+      if (label === id) setLabel("");
+      qc.invalidateQueries({ queryKey: ["labels", ws] });
+      qc.invalidateQueries({ queryKey: ["threads"] });
+    },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+
   const grouped = useMemo(() => {
     const out: { group: string; items: ThreadRow[] }[] = [];
     for (const t of items) {
@@ -94,6 +106,9 @@ export function PrimeboxPage() {
   // One row in the left list: an icon, the name, a small badge for unread conversations, and the total number.
   const folder = (key: string, name: string, count?: number, color?: string, icon?: React.ReactNode, unread?: number) => {
     const LabelIcon = color ? LABEL_ICONS[name] : undefined;
+    // A label you created can have a picture chosen for it; it is shown on the left, in place of the coloured dot.
+    const mine = color && !LabelIcon ? parseLabel(name) : null;
+    if (mine) name = mine.text;
     return (
       <button
         key={key}
@@ -101,10 +116,10 @@ export function PrimeboxPage() {
         className={cx("w-full flex items-center gap-3 rounded-lg px-2.5 h-9 text-sm", label === key ? "bg-ink-100 text-ink-900 font-medium" : "text-ink-700 hover:bg-ink-50")}
         title={`${count ?? 0} conversation${count === 1 ? "" : "s"}${unread ? `, ${unread} unread` : ""}`}
       >
-        {icon ?? (LabelIcon ? <LabelIcon size={18} className="text-ink-500 shrink-0" /> : color ? <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color }} /> : <Inbox size={18} />)}
+        {icon ?? (mine?.Icon ? <mine.Icon size={18} className="shrink-0" style={{ color }} /> : LabelIcon ? <LabelIcon size={18} className="text-ink-500 shrink-0" /> : color ? <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color }} /> : <Inbox size={18} />)}
         <span className="flex-1 text-left truncate">{name}</span>
-        {!!unread && <span className="min-w-[20px] h-5 px-1 grid place-items-center rounded-md border border-brand-200 bg-brand-50 text-[11px] font-medium text-brand-700" aria-label={`${unread} unread`}>{unread}</span>}
-        <span className={cx("min-w-[18px] text-right text-[11px] tabular-nums", count ? "text-ink-500" : "text-ink-300")}>{count ?? 0}</span>
+        {!!unread && <span className="min-w-[20px] h-5 px-1 grid place-items-center rounded-md border border-brand-200 bg-brand-50 text-xs font-medium text-brand-700" aria-label={`${unread} unread`}>{unread}</span>}
+        <span className={cx("min-w-[18px] text-right text-xs tabular-nums", count ? "text-ink-500" : "text-ink-300")}>{count ?? 0}</span>
       </button>
     );
   };
@@ -129,7 +144,16 @@ export function PrimeboxPage() {
             <Toggle checked={autoLabel} onChange={(v) => toggleAuto.mutate(v)} />
           </label>
         </div>
-        {(labels.data ?? []).map((l) => folder(l.id, l.name, l.count, l.color, undefined, l.unread))}
+        {(labels.data ?? []).map((l) => l.system ? folder(l.id, l.name, l.count, l.color, undefined, l.unread) : (
+          <div key={l.id} className="group relative">
+            {folder(l.id, l.name, l.count, l.color, undefined, l.unread)}
+            <button
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 grid place-items-center w-7 h-7 rounded-md bg-surface text-ink-500 hover:text-red-600 hover:bg-red-50 opacity-0 group-hover:opacity-100 focus:opacity-100"
+              title="Delete this label" aria-label={`Delete label ${parseLabel(l.name).text}`}
+              onClick={() => { if (confirm(`Delete the label "${parseLabel(l.name).text}"? Conversations that have it will show as "No label". The conversations themselves are not deleted.`)) delLabel.mutate(l.id); }}
+            ><Trash2 size={14} /></button>
+          </div>
+        ))}
         <button className="w-full flex items-center gap-2 rounded-lg px-2.5 h-9 text-sm font-medium text-brand-700 hover:bg-ink-50 mt-1" onClick={() => setNewLabel(true)}>
           <Plus size={18} /> Add new label
         </button>
@@ -147,14 +171,14 @@ export function PrimeboxPage() {
           </div>
           <div className={cx("relative ml-auto self-center", threadId ? "w-[130px]" : "w-72 lg:w-80")}>
             <input ref={searchRef} className="input pr-9 shadow-sm" placeholder="Search" aria-label="Search replies" value={q} onChange={(e) => setQ(e.target.value)} />
-            <kbd className="absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-ink-400 border border-ink-200 rounded px-1.5 bg-ink-50">/</kbd>
+            <kbd className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-ink-400 border border-ink-200 rounded px-1.5 bg-ink-50">/</kbd>
           </div>
           <div className={cx("flex gap-2 self-center", threadId ? "xl:hidden" : "lg:hidden")}>
             <FiltersButton ws={ws} value={filters} onChange={setFilters} />
             <select className="lg:hidden input h-8 w-auto text-xs" value={label} onChange={(e) => setLabel(e.target.value)}>
               <option value="">All labels</option>
               <option value="none">No label</option>
-              {(labels.data ?? []).map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+              {(labels.data ?? []).map((l) => <option key={l.id} value={l.id}>{parseLabel(l.name).text}</option>)}
             </select>
           </div>
         </div>
@@ -165,7 +189,7 @@ export function PrimeboxPage() {
               : <Empty icon={<Inbox size={20} />} title="No replies yet" text="Replies from every connected mailbox land here. Launch a sequence to start conversations." />
           ) : grouped.map((g) => (
             <div key={g.group}>
-              <div className={cx("flex items-center gap-3 pt-4 pb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-400", threadId ? "px-4" : "px-6")}>
+              <div className={cx("flex items-center gap-3 pt-4 pb-1 text-xs font-semibold uppercase tracking-wide text-ink-400", threadId ? "px-4" : "px-6")}>
                 <span>{g.group}</span><span className="h-px flex-1 bg-ink-100" />
               </div>
               {g.items.map((t) => (
@@ -187,6 +211,19 @@ export function PrimeboxPage() {
   );
 }
 
+// Pictures a label you create can use (like the built-in labels have). The choice is kept at the start of the name as "[save] ".
+const PICK_ICONS: Record<string, [LucideIcon, string]> = {
+  save: [Save, "Save"], star: [Star, "Star"], flag: [Flag, "Flag"], bookmark: [Bookmark, "Bookmark"], heart: [Heart, "Heart"], phone: [Phone, "Phone"],
+  calendar: [Calendar, "Calendar"], briefcase: [Briefcase, "Briefcase"], zap: [Zap, "Lightning"], target: [Target, "Target"], tag: [Tag, "Tag"], bell: [Bell, "Bell"],
+  flame: [Flame, "Hot"], gift: [Gift, "Gift"], handshake: [Handshake, "Deal"], lightbulb: [Lightbulb, "Idea"], rocket: [Rocket, "Rocket"], building: [Building2, "Company"],
+  dollar: [DollarSign, "Money"], help: [CircleHelp, "Question"], hourglass: [Hourglass, "Waiting"], thumbs: [ThumbsUp, "Good"],
+};
+function parseLabel(name: string): { text: string; Icon?: LucideIcon } {
+  const m = name.match(/^\[([a-z]+)\]\s*/);
+  const picked = m ? PICK_ICONS[m[1]!]?.[0] : undefined;
+  return m && picked ? { text: name.slice(m[0].length), Icon: picked } : { text: name };
+}
+
 // What each reply label looks like in the list: a small icon in the label's colour, with the name on hover.
 const LABEL_ICONS: Record<string, LucideIcon> = {
   Positive: ThumbsUp, Negative: ThumbsDown, "Wrong contact": UserX, "Not at this time": Clock, "Meeting booked": CalendarCheck,
@@ -206,7 +243,9 @@ function ThreadRowItem({ t, label, compact, active, onOpen }: { t: ThreadRow; la
   const toast = useToast();
   const name = t.contact ? `${t.contact.firstName} ${t.contact.lastName}`.trim() || t.contact.email : "Unknown";
   const email = t.contact?.email;
-  const Icon = label ? LABEL_ICONS[label.name] : undefined;
+  const parsed = label ? parseLabel(label.name) : undefined;
+  const Icon = label ? (LABEL_ICONS[label.name] ?? parsed?.Icon) : undefined;
+  const labelText = parsed?.text ?? "";
   const text = t.snippet || t.subject;
   const unread = t.unread;
   const copy = async (e: React.MouseEvent) => {
@@ -214,7 +253,7 @@ function ThreadRowItem({ t, label, compact, active, onOpen }: { t: ThreadRow; la
     try { await navigator.clipboard.writeText(email ?? ""); toast("Email address copied"); } catch { toast("Could not copy", "error"); }
   };
   const labelMark = label && (
-    <span title={label.name} aria-label={label.name} className="shrink-0 grid place-items-center w-6" style={{ color: label.color }}>
+    <span title={labelText} aria-label={labelText} className="shrink-0 grid place-items-center w-6" style={{ color: label.color }}>
       {Icon ? <Icon size={17} /> : <span className="w-2.5 h-2.5 rounded-full" style={{ background: label.color }} />}
     </span>
   );
@@ -264,7 +303,7 @@ function ThreadRowItem({ t, label, compact, active, onOpen }: { t: ThreadRow; la
           {label && (
             <span className="mt-2 flex items-center gap-1.5 text-sm font-medium" style={{ color: label.color }}>
               {Icon ? <Icon size={16} /> : <span className="w-2.5 h-2.5 rounded-full" style={{ background: label.color }} />}
-              {label.name}
+              {labelText}
             </span>
           )}
         </span>
@@ -341,21 +380,24 @@ function LabelPicker({ labels, value, onPick }: { labels: Label[]; value: string
     return () => document.removeEventListener("mousedown", h);
   }, [open]);
 
-  const item = (id: string | null, name: string, color?: string) => (
+  const item = (id: string | null, raw: string, color?: string) => {
+    const name = parseLabel(raw).text;
+    return (
     <button key={id ?? "none"} className={cx("w-full flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm text-left hover:bg-ink-50", id === value && "bg-ink-50 font-medium")}
       onClick={() => { onPick(id); setOpen(false); }}>
-      <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color ?? "transparent", border: color ? undefined : "1px solid rgb(var(--ink-300))" }} />
+      {(() => { const I = parseLabel(raw ?? "").Icon ?? (raw ? LABEL_ICONS[name] : undefined); return I ? <I size={15} className="shrink-0" style={{ color }} /> : <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color ?? "transparent", border: color ? undefined : "1px solid rgb(var(--ink-300))" }} />; })()}
       <span className="flex-1 truncate">{name}</span>
       {id === value && <Check size={15} className="text-brand-600" />}
     </button>
-  );
+    );
+  };
   return (
     <div className="relative min-w-0 shrink" ref={ref}>
       <button type="button" aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((o) => !o)}
         className="flex items-center gap-2.5 w-48 max-w-full h-[34px] rounded-lg border border-ink-200 bg-surface pl-3 pr-2.5 text-sm text-ink-800 shadow-sm hover:border-ink-300">
         {current && <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: current.color }} />}
         <span className="flex-1 text-left truncate">{current?.name ?? "No label"}</span>
-        <kbd className="grid place-items-center w-5 h-5 rounded bg-ink-100 text-[11px] font-medium text-ink-500">L</kbd>
+        <kbd className="grid place-items-center w-5 h-5 rounded bg-ink-100 text-xs font-medium text-ink-500">L</kbd>
         <ChevronDown size={16} className={cx("text-ink-500 transition-transform", open && "rotate-180")} />
       </button>
       {open && (
@@ -442,7 +484,7 @@ function ThreadView({ id, labels, onBack }: { id: string; labels: Label[]; onBac
       <div className="flex-1 overflow-y-auto px-4 py-4">
         <div className="text-xs text-ink-500">Subject</div>
         <h2 className="text-base font-semibold text-ink-900 mt-0.5">{t.subject || "(no subject)"}</h2>
-        <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-ink-400 mt-1">
+        <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-ink-400 mt-1">
           {t.contact?.companyName && <span>{t.contact.companyName}</span>}
           {t.sequence && <span>Sequence: {t.sequence.name}</span>}
           <span>Mailbox: {t.mailbox?.email}</span>
@@ -467,7 +509,7 @@ function ThreadView({ id, labels, onBack }: { id: string; labels: Label[]; onBac
                   <div className="mt-1 mb-2 text-xs font-semibold text-ink-500">Earlier in this thread</div>
                 )}
                 {newDay && (
-                  <div className="flex items-center gap-3 my-3 text-[11px] font-medium uppercase tracking-wide text-ink-400">
+                  <div className="flex items-center gap-3 my-3 text-xs font-medium uppercase tracking-wide text-ink-400">
                     <span className="h-px flex-1 bg-ink-100" />{day}<span className="h-px flex-1 bg-ink-100" />
                   </div>
                 )}
@@ -484,7 +526,7 @@ function ThreadView({ id, labels, onBack }: { id: string; labels: Label[]; onBac
                       <ChevronRight size={12} className="text-ink-400 shrink-0" />
                       <Avatar name={toName} size={16} />
                       <span className="text-ink-600 truncate">{toName}</span>
-                      <span className="ml-auto text-[11px] text-ink-400 shrink-0">{fmtDate(m.sentAt, true)}</span>
+                      <span className="ml-auto text-xs text-ink-400 shrink-0">{fmtDate(m.sentAt, true)}</span>
                     </div>
                     <div className="text-xs text-ink-500 truncate">{m.fromAddress}{m.direction === "out" && <> &rarr; {m.toAddress}</>}</div>
                     <div className={cx("mt-2.5 rounded-lg border overflow-hidden", m.direction === "in" ? "border-ink-200 bg-surface" : "border-brand-100 bg-surface")}>
@@ -538,10 +580,11 @@ function NewLabelModal({ open, onClose, onCreated }: { open: boolean; onClose: (
   const toast = useToast();
   const [name, setName] = useState("");
   const [color, setColor] = useState("#6B2737");
+  const [icon, setIcon] = useState("");
   const [countsAs, setCountsAs] = useState("neutral");
   const create = useMutation({
-    mutationFn: () => api(`/v1/workspaces/${ws}/labels`, { body: { name, color, countsAs } }),
-    onSuccess: () => { onCreated(); onClose(); setName(""); },
+    mutationFn: () => api(`/v1/workspaces/${ws}/labels`, { body: { name: icon ? `[${icon}] ${name.trim()}` : name, color, countsAs } }),
+    onSuccess: () => { onCreated(); onClose(); setName(""); setIcon(""); },
     onError: (e: Error) => toast(e.message, "error"),
   });
   return (
@@ -551,6 +594,16 @@ function NewLabelModal({ open, onClose, onCreated }: { open: boolean; onClose: (
     </>}>
       <div className="space-y-4">
         <div><label className="label">Name</label><input className="input" value={name} onChange={(e) => setName(e.target.value)} autoFocus /></div>
+        <div>
+          <label className="label">Picture (optional, shown on the left of the label)</label>
+          <div className="flex flex-wrap gap-1.5">
+            {Object.entries(PICK_ICONS).map(([key, [I, tip]]) => (
+              <button key={key} type="button" title={tip} aria-label={tip} aria-pressed={icon === key}
+                className={cx("grid place-items-center w-9 h-9 rounded-lg border", icon === key ? "border-brand-600 bg-brand-50 text-brand-700" : "border-ink-200 text-ink-600 hover:bg-ink-50")}
+                onClick={() => setIcon(icon === key ? "" : key)}><I size={17} /></button>
+            ))}
+          </div>
+        </div>
         <div className="flex gap-4">
           <div><label className="label">Colour</label><input type="color" className="h-9 w-16 rounded border border-ink-200" value={color} onChange={(e) => setColor(e.target.value)} /></div>
           <div className="flex-1">

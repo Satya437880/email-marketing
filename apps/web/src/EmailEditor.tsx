@@ -49,7 +49,8 @@ const FONTS: [string, string][] = [
   ["Cambria", "Cambria, Georgia, serif"], ["Courier New", "'Courier New', Courier, monospace"], ["Lucida Console", "'Lucida Console', Monaco, monospace"],
   ["Comic Sans MS", "'Comic Sans MS', cursive, sans-serif"], ["Impact", "Impact, Charcoal, sans-serif"],
 ];
-const SIZES: [string, string][] = [["Tiny", "1"], ["Small", "2"], ["Normal", "3"], ["Medium", "4"], ["Large", "5"], ["Huge", "6"], ["Giant", "7"]];
+// Point sizes, like Word and Outlook.
+const SIZES = ["8", "9", "10", "10.5", "11", "12", "14", "16", "18", "20", "24", "28", "36"];
 
 const menuItem = "w-full text-left rounded-md px-2.5 py-1.5 text-sm hover:bg-ink-50";
 
@@ -117,7 +118,7 @@ export function RichBody({ html, onChange, editorKey, variables, placeholder, to
   const [source, setSource] = useState(false);
   const [showFormat, setShowFormat] = useState(false);
   const [font, setFont] = useState("Arial, Helvetica, sans-serif");
-  const [size, setSize] = useState("3");
+  const [size, setSize] = useState("11");
   const [color, setColor] = useState("#222222");
   const imageRef = useRef<HTMLInputElement>(null);
   // Keep every toolbar button on one line: when the editor is narrow, dropdowns show just their icon.
@@ -209,6 +210,17 @@ export function RichBody({ html, onChange, editorKey, variables, placeholder, to
     document.execCommand(cmd, false, value);
     sync();
   };
+  // The browser's own size command only knows sizes 1-7, so it is used as a marker and swapped for a real point size.
+  const setPt = (pt: string) => {
+    exec("fontSize", "7");
+    ref.current?.querySelectorAll('font[size="7"]').forEach((f) => {
+      const span = document.createElement("span");
+      span.style.fontSize = `${pt}pt`;
+      span.innerHTML = f.innerHTML;
+      f.replaceWith(span);
+    });
+    sync();
+  };
   const insertVar = (v: string) => (source ? onChange(`${html}{{${v}}}`) : exec("insertText", `{{${v}}}`));
   useEffect(() => {
     if (insertRef) insertRef.current = (t: string) => (source ? onChange(`${html}${t}`) : exec("insertText", t));
@@ -289,8 +301,8 @@ export function RichBody({ html, onChange, editorKey, variables, placeholder, to
             {FONTS.map(([label, stack]) => <option key={label} value={stack} style={{ fontFamily: stack }}>{label}</option>)}
           </select>
           <select aria-label="Size" className="h-8 rounded-md bg-transparent px-2 text-sm text-ink-700 hover:bg-ink-100 focus:outline-none" value={size}
-            onChange={(e) => { setSize(e.target.value); exec("fontSize", e.target.value); }}>
-            {SIZES.map(([label, v]) => <option key={label} value={v}>{label}</option>)}
+            onChange={(e) => { setSize(e.target.value); setPt(e.target.value); }}>
+            {SIZES.map((v) => <option key={v} value={v}>{v}</option>)}
           </select>
           <ToolButton title="Bold" onClick={() => exec("bold")}><Bold size={16} /></ToolButton>
           <ToolButton title="Italic" onClick={() => exec("italic")}><Italic size={16} /></ToolButton>
@@ -367,6 +379,8 @@ export interface EmailEditorProps {
   // Files sent with this email (10 MB in total).
   // Subject of the email this one replies to, shown as "Re: ..." when the type is "Reply in same thread".
   replySubject?: string;
+  // The drafts of the steps before this one (oldest first); the preview shows them below this email as the thread history.
+  earlier?: { subject: string; bodyHtml: string }[];
   attachments?: Attachment[];
   onAttachments?: (files: Attachment[]) => void;
 }
@@ -381,7 +395,7 @@ const readBase64 = (f: File) => new Promise<string>((res, rej) => {
 });
 
 // Subject + rich-text body editor with variables, templates, spam check, preview send and save-as-template.
-export function EmailEditor({ stepName, onStepName, subject, onSubject, bodyHtml, onBody, subjectPlaceholder, editorKey, embedded, canReply, stats, attachments, onAttachments, replySubject }: EmailEditorProps) {
+export function EmailEditor({ stepName, onStepName, subject, onSubject, bodyHtml, onBody, subjectPlaceholder, editorKey, embedded, canReply, stats, attachments, onAttachments, replySubject, earlier }: EmailEditorProps) {
   const ws = useWs();
   const toast = useToast();
   const qc = useQueryClient();
@@ -513,7 +527,7 @@ export function EmailEditor({ stepName, onStepName, subject, onSubject, bodyHtml
         </div>
       )}
       </div>
-      <PreviewPane ws={ws} subject={subject} bodyHtml={bodyHtml} replySubject={canReply ? (replySubject ?? "") : undefined} />
+      <PreviewPane ws={ws} subject={subject} bodyHtml={bodyHtml} replySubject={canReply ? (replySubject ?? "") : undefined} earlier={canReply && !subject.trim() ? earlier : undefined} />
       {showSpam && (
         <aside className="relative min-w-0 p-4 border-t border-ink-100 xl:border-t-0" aria-label="Spam check">
           <button className="absolute right-2 top-2 text-ink-500 hover:text-ink-800" aria-label="Close spam check" onClick={() => setShowSpam(false)}><X size={16} /></button>
@@ -537,18 +551,19 @@ export function EmailEditor({ stepName, onStepName, subject, onSubject, bodyHtml
         )}
       </div>
 
-      {preview && <PreviewModal ws={ws} subject={subject} bodyHtml={bodyHtml} onClose={() => setPreview(false)} />}
+      {preview && <PreviewModal ws={ws} subject={subject} bodyHtml={bodyHtml} earlier={canReply && !subject.trim() ? earlier : undefined} onClose={() => setPreview(false)} />}
       {saveTpl && <SaveTemplateModal ws={ws} subject={subject} bodyHtml={bodyHtml} onClose={() => setSaveTpl(false)} onSaved={() => qc.invalidateQueries({ queryKey: ["templates", ws] })} />}
     </div>
   );
 }
 
 // Live preview beside the draft: the email as one contact would receive it, with their details filled in.
-function PreviewPane({ ws, subject, bodyHtml, replySubject }: { ws: string; subject: string; bodyHtml: string; replySubject?: string }) {
+function PreviewPane({ ws, subject, bodyHtml, replySubject, earlier }: { ws: string; subject: string; bodyHtml: string; replySubject?: string; earlier?: { subject: string; bodyHtml: string }[] }) {
   const contacts = useQuery({ queryKey: ["contacts", ws, "preview-picker"], queryFn: () => api<Paged<Contact>>(`/v1/workspaces/${ws}/contacts?pageSize=100`) });
   const [contactId, setContactId] = useState("");
   const [device, setDevice] = useState<"desktop" | "mobile">("desktop");
   const [nonce, setNonce] = useState(0);
+  const [showThread, setShowThread] = useState(false);
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<{ subject: string; replySubject?: string; html: string; contact: { id: string; email: string } | null } | null>(null);
 
@@ -557,13 +572,13 @@ function PreviewPane({ ws, subject, bodyHtml, replySubject }: { ws: string; subj
     let live = true;
     setLoading(true);
     const t = setTimeout(() => {
-      api<{ subject: string; replySubject?: string; html: string; contact: { id: string; email: string } | null }>(`/v1/workspaces/${ws}/preview`, { body: { subject, bodyHtml, replySubject, contactId: contactId || undefined } })
+      api<{ subject: string; replySubject?: string; html: string; contact: { id: string; email: string } | null }>(`/v1/workspaces/${ws}/preview`, { body: { subject, bodyHtml, replySubject, earlier: showThread ? earlier : undefined, contactId: contactId || undefined } })
         .then((r) => { if (live) setData(r); })
         .catch(() => { if (live) setData(null); })
         .finally(() => { if (live) setLoading(false); });
     }, 400);
     return () => { live = false; clearTimeout(t); };
-  }, [ws, subject, bodyHtml, replySubject, contactId, nonce]);
+  }, [ws, subject, bodyHtml, replySubject, JSON.stringify(earlier ?? []), showThread, contactId, nonce]);
 
   const list = contacts.data?.items ?? [];
   const nameOf = (c: Contact) => `${c.firstName} ${c.lastName}`.trim() || c.email;
@@ -584,6 +599,11 @@ function PreviewPane({ ws, subject, bodyHtml, replySubject }: { ws: string; subj
           <ChevronDown size={15} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-ink-500" />
         </div>
         <button className="btn-secondary h-9" onClick={() => setNonce((n) => n + 1)}><RefreshCw size={14} className={cx(loading && "animate-spin")} /> Refresh</button>
+        {!!earlier?.length && (
+          <label className="flex items-center gap-2 h-9 px-3 rounded-xl border border-ink-200 bg-surface text-sm text-ink-700 cursor-pointer select-none">
+            <input type="checkbox" checked={showThread} onChange={(e) => setShowThread(e.target.checked)} /> Show email thread
+          </label>
+        )}
         <div className="flex items-center rounded-xl border border-ink-200 bg-surface p-0.5">
           <button className={segment(device === "desktop")} aria-label="Desktop preview" aria-pressed={device === "desktop"} onClick={() => setDevice("desktop")}><Monitor size={16} /></button>
           <button className={segment(device === "mobile")} aria-label="Mobile preview" aria-pressed={device === "mobile"} onClick={() => setDevice("mobile")}><Smartphone size={16} /></button>
@@ -607,13 +627,13 @@ function PreviewPane({ ws, subject, bodyHtml, replySubject }: { ws: string; subj
   );
 }
 
-function PreviewModal({ ws, subject, bodyHtml, onClose }: { ws: string; subject: string; bodyHtml: string; onClose: () => void }) {
+function PreviewModal({ ws, subject, bodyHtml, earlier, onClose }: { ws: string; subject: string; bodyHtml: string; earlier?: { subject: string; bodyHtml: string }[]; onClose: () => void }) {
   const toast = useToast();
   const mailboxes = useQuery({ queryKey: ["mailboxes", ws], queryFn: () => api<Mailbox[]>(`/v1/workspaces/${ws}/mailboxes`) });
   const [to, setTo] = useState("");
   const [mailboxId, setMailboxId] = useState("");
   const send = useMutation({
-    mutationFn: () => api(`/v1/workspaces/${ws}/send-test`, { body: { mailboxId: mailboxId || mailboxes.data?.[0]?.id, to, subject: subject || "(follow-up)", bodyHtml } }),
+    mutationFn: () => api(`/v1/workspaces/${ws}/send-test`, { body: { mailboxId: mailboxId || mailboxes.data?.[0]?.id, to, subject, bodyHtml, earlier } }),
     onSuccess: () => { toast(`Preview sent to ${to}`); onClose(); },
     onError: (e: Error) => toast(e.message, "error"),
   });
@@ -628,7 +648,7 @@ function PreviewModal({ ws, subject, bodyHtml, onClose }: { ws: string; subject:
           <div><label className="label">Send from</label>
             <select className="input" value={mailboxId} onChange={(e) => setMailboxId(e.target.value)}>{mailboxes.data.map((m) => <option key={m.id} value={m.id}>{m.email}</option>)}</select>
           </div>
-          <p className="text-xs text-ink-500">Variables are filled from the contact with this email if one exists, otherwise with sample values. The subject is prefixed with [Test].</p>
+          <p className="text-xs text-ink-500">Variables are filled from the contact with this email if one exists, otherwise with sample values. It is sent exactly like a real email (same subject, signature, unsubscribe line{earlier?.length ? " and, for this follow-up, the earlier emails of the thread underneath" : ""}) so you see what the recipient sees.</p>
         </div>
       )}
     </Modal>
@@ -707,7 +727,7 @@ function SpamPanel({ spam }: { spam: SpamReport | null }) {
       {spam.issues.length > 0 && (
         <ul className="mt-3 space-y-1.5 text-xs text-ink-600">{spam.issues.map((i) => <li key={i.code} className="flex gap-2"><AlertTriangle size={13} className="text-amber-600 mt-0.5 shrink-0" />{i.message}</li>)}</ul>
       )}
-      <p className="mt-2 text-center text-[11px] text-ink-500">* We recommend using plain text</p>
+      <p className="mt-2 text-center text-xs text-ink-500">* We recommend using plain text</p>
     </div>
   );
 }

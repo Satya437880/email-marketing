@@ -36,6 +36,8 @@ function SequenceEditor() {
   const [dirty, setDirty] = useState(false);
   const settingsSave = useRef<SaveSettings | null>(null);
   const [settingsDirty, setSettingsDirty] = useState(false);
+  // Bumped by Discard so the editors and the settings form start over from what is saved.
+  const [resetKey, setResetKey] = useState(0);
 
   useEffect(() => {
     if (seq.data && !dirty) {
@@ -74,6 +76,12 @@ function SequenceEditor() {
     if (dirty) saveSteps.mutate();
     if (settingsDirty && settingsSave.current) await settingsSave.current();
   };
+  const discardChanges = () => {
+    if (!confirm("Discard your unsaved changes? The sequence goes back to how it was last saved.")) return;
+    if (dirty && seq.data) { setSteps(seq.data.steps); setDirty(false); }
+    setResetKey((k) => k + 1);
+  };
+  const discardButton = <button className="btn-secondary h-10" onClick={discardChanges} disabled={saveSteps.isPending}>Discard changes</button>;
   const updateButton = <button className="btn-primary h-10" onClick={() => void updateSequence()} disabled={saveSteps.isPending}>Update sequence</button>;
   // Leaving the Schedule or Settings screen saves any unsaved changes first.
   const go = async (n: number) => {
@@ -90,6 +98,7 @@ function SequenceEditor() {
           <span className="hidden sm:inline text-sm text-ink-500 truncate max-w-[260px]">{s.name}</span>
           <StatusPill status={s.status} />
           <div className="flex flex-wrap gap-2">
+            {(dirty || settingsDirty) && discardButton}
             {(dirty || settingsDirty) && <button className="btn-primary h-10" onClick={() => void updateSequence()} disabled={saveSteps.isPending}>Update sequence</button>}
             {s.status === "draft" && <button className="btn-primary" disabled={dirty || action.isPending} title={dirty ? "Save first" : undefined} onClick={() => { if (confirm(`Launch "${s.name}"? Emails start going out in its next sending window to the ${s.contactCount.toLocaleString()} contact${s.contactCount === 1 ? "" : "s"} in it.`)) action.mutate("launch"); }}><Rocket size={15} /> Launch</button>}
           </div>
@@ -104,15 +113,15 @@ function SequenceEditor() {
           <div className="mt-6"><ContactsTab sequenceId={s.id} onChange={refresh} /></div>
         </>}
         {step === 2 && <StepHeader title="Sequence steps" help="Add emails and the waits between them. Add variants to A/B test." text="Draft your sequence by adding steps and customizing them"
-          actions={dirty ? updateButton : undefined} />}
-        {step === 2 && <div className="mt-6"><StepBuilder steps={steps} onChange={(next) => { setSteps(next); setDirty(true); }} /></div>}
+          actions={dirty ? <>{discardButton}{updateButton}</> : undefined} />}
+        {step === 2 && <div className="mt-6"><StepBuilder key={resetKey} steps={steps} onChange={(next) => { setSteps(next); setDirty(true); }} /></div>}
 
         {(step === 3 || step === 4) && <>
           {step === 3
             ? <StepHeader title="Schedule" help="The days and hours emails may be sent, in the time zone below." text="Activate the days on which emails should be sent out." actions={settingsDirty ? updateButton : undefined} />
             : <StepHeader title="Settings" help="Rotation, priorities and deliverability rules." text="Choose the mailboxes that send this sequence and how it behaves." actions={settingsDirty ? updateButton : undefined} />}
           {step === 4 && <section className="pt-6"><h3 className="text-sm font-semibold mb-3">Rotation</h3><SendersTab sequence={s} onChange={refresh} /></section>}
-          <SettingsTab sequence={s} onChange={refresh} section={step === 3 ? "schedule" : "settings"} registerSave={(fn) => { settingsSave.current = fn; }} onDirty={setSettingsDirty} />
+          <SettingsTab key={resetKey} sequence={s} onChange={refresh} section={step === 3 ? "schedule" : "settings"} registerSave={(fn) => { settingsSave.current = fn; }} onDirty={setSettingsDirty} />
         </>}
 
         <div className="flex items-center justify-between pt-8 mt-4 border-t border-ink-200">
@@ -859,7 +868,6 @@ function SettingsTab({ sequence, onChange, section = "all", registerSave, onDirt
         </SettingsRow>
 
         <SettingsRow title="Multithreading" show={show("settings")}>
-          <OptionCard icon={<MessageSquareReply size={16} />} title="Stop on reply from company" text="If any recipient from a company replies, all other scheduled emails to that company's contacts will immediately pause." checked={st.stopOnCompanyReply} onChange={(v) => set("stopOnCompanyReply", v)} />
           <OptionCard icon={<Users size={16} />} title="Sequential sending within a company" text="Send messages to people at a company one by one, after each has completed their sequence." checked={st.sequentialWithinCompany} onChange={(v) => set("sequentialWithinCompany", v)} />
           <OptionCard icon={<Building2 size={16} />} title="Set a company limit" text="Set the maximum number of people you'll contact at the same company." checked={st.companyLimit !== null} onChange={(v) => set("companyLimit", v ? 3 : null)}>
             <label className="flex items-center gap-2 text-sm">Max <input type="number" min={1} max={1000} className="input h-8 w-20" value={st.companyLimit ?? 3} onChange={(e) => set("companyLimit", Math.max(1, Number(e.target.value)))} /> people per company</label>
@@ -892,7 +900,11 @@ function SettingsTab({ sequence, onChange, section = "all", registerSave, onDirt
           <div className="text-sm font-medium text-ink-600 pt-3">Opt-out of emails</div>
           <OptionCard icon={<LogOut size={16} />} title="Custom opt-out at the bottom" text="Add a hyperlink or text for recipients to unsubscribe at the bottom of the email." checked={st.optOut.enabled} onChange={(v) => set("optOut", { ...st.optOut, enabled: v })}>
             <input className="input h-9" value={st.optOut.text} onChange={(e) => set("optOut", { ...st.optOut, text: e.target.value })} placeholder="If you'd rather not hear from me, let me know" />
-            <p className="text-xs text-ink-500 mt-1">The text links to a one-click unsubscribe page.</p>
+            <label className="flex items-start gap-2 mt-2 text-sm">
+              <input type="checkbox" className="mt-1" checked={!!st.optOut.replyOnly} onChange={(e) => set("optOut", { ...st.optOut, replyOnly: e.target.checked })} />
+              <span>Make it look personal: a plain line asking people to reply "unsubscribe". No link, and no Unsubscribe button in Gmail. A reply saying so adds them to the do-not-contact list.</span>
+            </label>
+            {!st.optOut.replyOnly && <p className="text-xs text-ink-500 mt-1">The text links to a one-click unsubscribe page.</p>}
           </OptionCard>
           {!st.optOut.enabled && <p className="text-xs text-amber-700">Without an opt-out link, recipients can only unsubscribe by replying. CAN-SPAM, CASL and Gmail/Yahoo bulk-sender rules expect an easy opt-out in cold email.</p>}
         </SettingsRow>
@@ -908,6 +920,7 @@ function SettingsTab({ sequence, onChange, section = "all", registerSave, onDirt
       {dirty && (
         <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-30 card flex items-center gap-3 px-4 py-2.5 shadow-lg">
           <span className="text-sm">You have unsaved changes</span>
+          <button className="btn-secondary" onClick={() => { setSt(initial); setPriority(sequence.priority); setCcOn(initial.cc.length > 0 || initial.bcc.length > 0); setCcText({ cc: initial.cc.join(", "), bcc: initial.bcc.join(", ") }); }} disabled={save.isPending}>Discard</button>
           <button className="btn-primary" onClick={() => save.mutate()} disabled={save.isPending || scheduleInvalid(st.schedule)}>{save.isPending ? "Saving…" : "Update sequence"}</button>
         </div>
       )}

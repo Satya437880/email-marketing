@@ -1,7 +1,7 @@
 import { MANUAL_SEND_MAX, sendManualEmails } from "@outreach/core";
 import { db } from "@outreach/db";
 import { render } from "@outreach/mail";
-import { sql } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { wsId } from "../auth";
@@ -39,11 +39,48 @@ type SentRow = {
 const listQuery = z.object({
   status: z.enum(["all", "scheduled", "sent"]).default("all"),
   q: z.string().trim().max(200).optional(),
+  filters: z.string().max(20000).optional(),
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(50),
 });
 
 const CAP = 500;
+
+// The Filters panel on the Emails page: each filter is "include" (only these) or "exclude" (not these).
+const filterList = z.object({ mode: z.enum(["include", "exclude"]), values: z.array(z.string().max(100)).max(300) });
+const panelFilters = z.object({ sequence: filterList.optional(), tag: filterList.optional(), mailbox: filterList.optional(), dnc: filterList.optional(), response: filterList.optional() });
+
+// Column names of the table being filtered (fixed strings from this file, never user input).
+interface EmailRefs { contact: string; sequence: string; mailbox: string; email: string; state: string }
+
+function emailFilterSql(raw: string | undefined, workspaceId: string, r: EmailRefs): SQL {
+  if (!raw) return sql``;
+  let f: z.infer<typeof panelFilters>;
+  try { f = panelFilters.parse(JSON.parse(raw)); } catch { throw new HttpError(400, "bad_filters", "The filters could not be read"); }
+  const uuids = (v: string[]) => v.filter((x) => /^[0-9a-f-]{36}$/i.test(x));
+  const inList = (v: string[]) => sql.join(uuids(v).map((i) => sql`${i}::uuid`), sql`, `);
+  const apply = (l: z.infer<typeof filterList> | undefined, make: (values: string[]) => SQL | null): SQL => {
+    if (!l?.values.length) return sql``;
+    const cond = make(l.values);
+    if (!cond) return sql`and false`;
+    return l.mode === "exclude" ? sql`and not (${cond})` : sql`and (${cond})`;
+  };
+  const contact = sql.raw(r.contact), sequence = sql.raw(r.sequence), mailbox = sql.raw(r.mailbox), email = sql.raw(r.email), state = sql.raw(r.state);
+  const replied = sql`(${state} = 'replied' or exists (select 1 from events e where e.type = 'replied' and e.contact_id = ${contact} and e.sequence_id = ${sequence}))`;
+  const onDnc = sql`exists (select 1 from dnc_entries d where d.workspace_id = ${workspaceId} and ((d.type = 'email' and d.value = lower(${email})) or (d.type = 'domain' and d.value = split_part(lower(${email}), '@', 2))))`;
+  const responseCond: Record<string, SQL> = {
+    replied, no_reply: sql`not ${replied}`, bounced: sql`${state} = 'bounced'`, unsubscribed: sql`${state} = 'opted_out'`, ooo: sql`${state} = 'ooo'`,
+  };
+  const any = (parts: SQL[]) => (parts.length ? sql`(${sql.join(parts, sql` or `)})` : null);
+  return sql`
+    ${apply(f.sequence, (v) => (uuids(v).length ? sql`${sequence} in (${inList(v)})` : null))}
+    ${apply(f.tag, (v) => (uuids(v).length ? sql`exists (select 1 from contact_tags ct where ct.contact_id = ${contact} and ct.tag_id in (${inList(v)}))` : null))}
+    ${apply(f.mailbox, (v) => (uuids(v).length ? sql`${mailbox} in (${inList(v)})` : null))}
+    ${apply(f.dnc, (v) => any(v.flatMap((x) => (x === "on" ? [onDnc] : x === "off" ? [sql`not ${onDnc}`] : []))))}
+    ${apply(f.response, (v) => any(v.flatMap((x) => (responseCond[x] ? [responseCond[x]!] : []))))}`;
+}
 
 export async function emailRoutes(app: FastifyInstance) {
   // Every email in the workspace: the ones waiting to go out (scheduled by sequences) and the ones already sent.
@@ -67,6 +104,8 @@ export async function emailRoutes(app: FastifyInstance) {
         left join lateral (select subject, body_html from step_variants v where v.step_id = st.id order by label limit 1) v on true
         where sc.workspace_id = ${workspaceId} and sc.state in ('queued', 'active', 'ooo') and sc.next_run_at is not null and sc.next_step is not null
           ${like ? sql`and (c.email ilike ${like} or (c.first_name || ' ' || c.last_name) ilike ${like} or s.name ilike ${like})` : sql``}
+          ${q.from ? sql`and sc.next_run_at >= ${q.from.toISOString()}` : sql``} ${q.to ? sql`and sc.next_run_at <= ${q.to.toISOString()}` : sql``}
+          ${emailFilterSql(q.filters, workspaceId, { contact: "sc.contact_id", sequence: "sc.sequence_id", mailbox: "sc.assigned_mailbox_id", email: "c.email", state: "sc.state" })}
         order by sc.next_run_at asc
         limit ${CAP}
       `) as unknown as DueRow[];
@@ -95,6 +134,8 @@ export async function emailRoutes(app: FastifyInstance) {
         left join sequence_steps st on st.id = m.step_id
         where m.workspace_id = ${workspaceId} and m.direction = 'out'
           ${like ? sql`and (m.to_address ilike ${like} or m.subject ilike ${like} or s.name ilike ${like} or (coalesce(c.first_name, '') || ' ' || coalesce(c.last_name, '')) ilike ${like})` : sql``}
+          ${q.from ? sql`and m.sent_at >= ${q.from.toISOString()}` : sql``} ${q.to ? sql`and m.sent_at <= ${q.to.toISOString()}` : sql``}
+          ${emailFilterSql(q.filters, workspaceId, { contact: "m.contact_id", sequence: "m.sequence_id", mailbox: "m.mailbox_id", email: "m.to_address", state: "(select sc2.state from sequence_contacts sc2 where sc2.contact_id = m.contact_id and sc2.sequence_id = m.sequence_id limit 1)" })}
         order by m.sent_at desc
         limit ${CAP}
       `) as unknown as SentRow[];
@@ -143,7 +184,7 @@ export async function emailRoutes(app: FastifyInstance) {
     if (b.action === "delete") {
       if (scheduled.length) {
         const r = await db.execute(sql`
-          update sequence_contacts set state = 'finished', next_step = null, next_run_at = null, due_at = null
+          update sequence_contacts set state = 'finished', next_step = null, next_run_at = null, due_at = null, last_error = 'cancelled'
           where workspace_id = ${workspaceId} and id in ${scheduled} and state in ('queued', 'active', 'ooo') returning id
         `) as unknown as { id: string }[];
         done += r.length;
@@ -169,7 +210,7 @@ export async function emailRoutes(app: FastifyInstance) {
     const p = params(req, idParams);
     const workspaceId = wsId(req);
     const gone = await db.execute(sql`
-      update sequence_contacts set state = 'finished', next_step = null, next_run_at = null, due_at = null
+      update sequence_contacts set state = 'finished', next_step = null, next_run_at = null, due_at = null, last_error = 'cancelled'
       where id = ${p.id} and workspace_id = ${workspaceId} and state in ('queued', 'active', 'ooo') returning id
     `) as unknown as { id: string }[];
     if (!gone.length) notFound("Scheduled email");

@@ -6,6 +6,7 @@ import type { SequenceDetail } from "../api";
 import { useWs } from "../App";
 import { cx, Empty, fmtDate, Modal, Spinner, StatusPill, useToast } from "../ui";
 import { AnalyticsView, useAnalytics } from "./Analytics";
+import { ReportsModal } from "../ReportsModal";
 import { ContactsTab } from "./SequenceBuilder";
 
 type Tab = "analytics" | "contacts";
@@ -51,7 +52,6 @@ export function SequenceOverview({ sequence }: { sequence: SequenceDetail }) {
   const [rangeOpen, setRangeOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const rangeRef = useClickOutside(rangeOpen, () => setRangeOpen(false));
-  const reportRef = useClickOutside(reportOpen, () => setReportOpen(false));
 
   const range = { from: new Date(`${from}T00:00:00`).toISOString(), to: new Date(`${to}T23:59:59.999`).toISOString() };
   const { query: stats } = useAnalytics(ws, range.from, range.to, sequence.id);
@@ -76,19 +76,8 @@ export function SequenceOverview({ sequence }: { sequence: SequenceDetail }) {
           <Link to={`/${ws}/sequences`} className="btn-ghost btn-sm" aria-label="Back to sequences"><ArrowLeft size={16} /></Link>
           <h1 className="text-lg font-semibold flex-1 min-w-0 truncate">Sequence - {sequence.name}</h1>
           <StatusPill status={sequence.status} />
-          <div className="relative" ref={reportRef}>
-            <button className="btn-secondary h-10 px-4" onClick={() => setReportOpen((o) => !o)}><FileText size={17} /> Reporting</button>
-            {reportOpen && (
-              <div className="absolute right-0 top-12 z-30 w-72 card p-1.5">
-                <a className="block rounded-md px-3 py-2 hover:bg-ink-50" href={`/v1/workspaces/${ws}/reports/sequence-contacts.csv?sequenceId=${sequence.id}`} onClick={() => setReportOpen(false)}>
-                  <div className="text-sm font-medium">Contacts report</div><div className="text-xs text-ink-500">Every contact in this sequence with status (CSV)</div>
-                </a>
-                <a className="block rounded-md px-3 py-2 hover:bg-ink-50" href={`/v1/workspaces/${ws}/reports/messages.csv?sequenceId=${sequence.id}&from=${range.from}&to=${range.to}`} onClick={() => setReportOpen(false)}>
-                  <div className="text-sm font-medium">All emails</div><div className="text-xs text-ink-500">Emails sent and received in the selected dates (CSV)</div>
-                </a>
-              </div>
-            )}
-          </div>
+          <button className="btn-secondary h-10 px-4" onClick={() => setReportOpen(true)}><FileText size={17} /> Reporting</button>
+          {reportOpen && <ReportsModal ws={ws} sequenceId={sequence.id} from={range.from} to={range.to} onClose={() => setReportOpen(false)} />}
           <button className="btn-secondary h-10 px-4" onClick={() => nav(`/${ws}/sequences/${sequence.id}/edit`)}><PencilLine size={17} /> Edit sequence</button>
         </div>
         <div className="flex gap-6 overflow-x-auto">

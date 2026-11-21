@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, CheckCircle2, Pencil, Plus, Search, Send, XCircle } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Pencil, Plus, Search, Send, Trash2, XCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, type Attachment, type Contact, type Mailbox, type Paged, type SequenceRow, type Tag } from "../api";
@@ -83,6 +83,22 @@ export function ComposePage() {
     onError: (e: Error) => toast(e.message, "error"),
   });
 
+  // Discard: throw away the recipients, subject, text and files, and start with an empty form. The key restarts the editor.
+  const [resetKey, setResetKey] = useState(0);
+  const hasWork = count > 0 || !!subject.trim() || !!bodyHtml.replace(/<[^>]+>/g, "").trim() || attachments.length > 0;
+  const discard = () => {
+    if (hasWork && !confirm("Discard this email? The recipients, subject, text and files you added will be cleared.")) return;
+    setPicked({}); setSubject(""); setBodyHtml(""); setAttachments([]); setNewEmail(""); setNewName("");
+    setResetKey((k) => k + 1);
+  };
+  // Closing the tab or reloading with an unsent email asks first.
+  useEffect(() => {
+    if (!hasWork || results) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [hasWork, results]);
+
   const ready = count > 0 && !!mailboxId && subject.trim() && bodyHtml.replace(/<[^>]+>/g, "").trim();
   const mailbox = active.find((m) => m.id === mailboxId);
   // Say exactly what is still missing instead of leaving Send greyed out with no explanation.
@@ -118,7 +134,10 @@ export function ComposePage() {
   return (
     <div>
       <PageHeader icon={<Pencil size={18} />} title="Compose email"
-        actions={<Link to={`/${ws}/emails`} className="btn-secondary"><ArrowLeft size={16} /> Back</Link>} />
+        actions={<>
+          <button className="btn-secondary" onClick={discard} disabled={send.isPending} title={hasWork ? "Clear everything you have entered" : "Nothing to discard yet"}><Trash2 size={16} /> Discard</button>
+          <Link to={`/${ws}/emails`} className="btn-secondary"><ArrowLeft size={16} /> Back</Link>
+        </>} />
       <div className="px-4 md:px-8 py-5 space-y-5 max-w-[1500px]">
         <section className="card p-5">
           <div className="flex items-center justify-between gap-3">
@@ -128,8 +147,9 @@ export function ComposePage() {
               <button className="btn-ghost btn-sm" onClick={() => setPicked({})} disabled={!count}>Clear</button>
             </div>
           </div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <div className="relative flex-1 min-w-[14rem] max-w-sm">
+          {/* Search, the three filters and "add an email by hand" sit on one line (they wrap only on narrow screens). */}
+          <div className="mt-3 flex flex-wrap items-center gap-2 xl:flex-nowrap">
+            <div className="relative flex-1 min-w-[12rem] max-w-xs">
               <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-400" />
               <input className="input pl-9" placeholder="Search name, email or company" aria-label="Search contacts" value={typed} onChange={(e) => setTyped(e.target.value)} />
             </div>
@@ -147,12 +167,13 @@ export function ComposePage() {
               <option value="microsoft">Microsoft</option>
               <option value="other">Other</option>
             </select>
-          </div>
-          <form className="mt-3 flex flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); if (newEmail.trim()) addEmail.mutate(); }}>
-            <input className="input w-auto min-w-[15rem]" type="email" placeholder="Add an email address manually" aria-label="Email address to add" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} />
-            <input className="input w-auto min-w-[10rem]" placeholder="Name (optional)" aria-label="Name" value={newName} onChange={(e) => setNewName(e.target.value)} />
+            <span className="hidden xl:block self-stretch w-px bg-ink-200 mx-1" aria-hidden />
+          <form className="contents" onSubmit={(e) => { e.preventDefault(); if (newEmail.trim()) addEmail.mutate(); }}>
+            <input className="input w-auto flex-1 min-w-[14rem]" type="email" placeholder="Add an email address manually" aria-label="Email address to add" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} />
+            <input className="input w-auto min-w-[9rem] xl:w-44" placeholder="Name (optional)" aria-label="Name" value={newName} onChange={(e) => setNewName(e.target.value)} />
             <button className="btn-secondary" type="submit" disabled={!newEmail.trim() || addEmail.isPending}><Plus size={15} /> Add</button>
           </form>
+          </div>
           {count > 0 && (
             <div className="mt-3 flex flex-wrap gap-1.5">
               {chosen.map((c) => (
@@ -198,7 +219,7 @@ export function ComposePage() {
               onSubject={setSubject}
               bodyHtml={bodyHtml}
               onBody={setBodyHtml}
-              editorKey="compose"
+              editorKey={`compose-${resetKey}`}
               attachments={attachments}
               onAttachments={setAttachments}
               subjectPlaceholder="Enter your subject here"
@@ -210,6 +231,7 @@ export function ComposePage() {
           <button className="btn-primary h-11 px-6" disabled={!ready || send.isPending} onClick={() => { if (confirm(`Send this email to ${count} contact${count === 1 ? "" : "s"} from ${mailbox?.email}?`)) send.mutate(); }}>
             <Send size={16} /> {send.isPending ? "Sending…" : `Send to ${count || "…"} contact${count === 1 ? "" : "s"}`}
           </button>
+          <button className="btn-secondary h-11 px-5" disabled={send.isPending} onClick={discard}><Trash2 size={16} /> Discard</button>
           <p className="text-xs text-ink-500">{missing.length ? `Before you can send: ${missing.join(", ")}. ` : ""}Sent now from the chosen mailbox. Unsubscribed, do-not-contact and invalid addresses are skipped, and the mailbox's daily limit applies.</p>
         </div>
       </div>

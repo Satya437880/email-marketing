@@ -15,6 +15,8 @@ export default {
         surface: v("surface"),
       },
       fontFamily: { sans: ["Inter", "ui-sans-serif", "system-ui", "sans-serif"] },
+      // The app is drawn at 80%, so the usual 12px "small" text would land at 9.6px, too small to read comfortably. 13px lands at about 10.4px.
+      fontSize: { xs: ["0.8125rem", { lineHeight: "1.15rem" }] },
       boxShadow: { card: "0 1px 2px rgba(16,24,40,.04), 0 1px 3px rgba(16,24,40,.06)" },
     },
   },

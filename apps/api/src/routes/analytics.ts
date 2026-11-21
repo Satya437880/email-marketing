@@ -9,6 +9,8 @@ const rangeQuery = z.object({
   from: z.coerce.date().optional(),
   to: z.coerce.date().optional(),
   sequenceId: z.string().uuid().optional(),
+  // Several sequences at once, comma separated (the Reporting window).
+  sequenceIds: z.string().optional(),
 });
 
 export async function analyticsRoutes(app: FastifyInstance) {
@@ -22,7 +24,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
     const seqT = q.sequenceId ? sql`and t.sequence_id = ${q.sequenceId}` : sql``;
     const seqSc = q.sequenceId ? sql`and sc.sequence_id = ${q.sequenceId}` : sql``;
 
-    const [totals] = await db.execute<Record<string, number>>(sql`
+    const totalsP = db.execute<Record<string, number>>(sql`
       select
         count(*) filter (where type = 'sent')::int as sent,
         count(distinct contact_id) filter (where type = 'sent')::int as contacted,
@@ -33,9 +35,9 @@ export async function analyticsRoutes(app: FastifyInstance) {
         count(distinct contact_id) filter (where type = 'opted_out')::int as opted_out
       from events
       where workspace_id = ${workspaceId} and occurred_at between ${from} and ${to} ${seq}
-    `) as unknown as Record<string, number>[];
+    `);
 
-    const [funnel] = await db.execute<Record<string, number>>(sql`
+    const funnelP = db.execute<Record<string, number>>(sql`
       select
         (select count(*)::int from sequence_contacts sc where sc.workspace_id = ${workspaceId} and sc.created_at <= ${to} ${seqSc}) as added,
         (select count(*)::int from threads t join labels l on l.id = t.label_id
@@ -44,9 +46,9 @@ export async function analyticsRoutes(app: FastifyInstance) {
            where t.workspace_id = ${workspaceId} and l.counts_as = 'meeting' and t.last_message_at between ${from} and ${to} ${seqT}) as meetings,
         (select count(*)::int from threads t join labels l on l.id = t.label_id
            where t.workspace_id = ${workspaceId} and l.counts_as = 'closed' and t.last_message_at between ${from} and ${to} ${seqT}) as closed
-    `) as unknown as Record<string, number>[];
+    `);
 
-    const daily = await db.execute<{ day: string; sent: number; replied: number; opened: number; bounced: number }>(sql`
+    const dailyP = db.execute<{ day: string; sent: number; replied: number; opened: number; bounced: number }>(sql`
       select to_char(d, 'YYYY-MM-DD') as day,
         coalesce(sum((e.type = 'sent')::int), 0)::int as sent,
         coalesce(sum((e.type = 'replied' and coalesce(e.meta->>'kind', 'reply') = 'reply')::int), 0)::int as replied,
@@ -57,21 +59,23 @@ export async function analyticsRoutes(app: FastifyInstance) {
       group by d order by d
     `) as unknown as { day: string; sent: number; replied: number; opened: number; bounced: number }[];
 
-    const senders = await db.execute<Record<string, unknown>>(sql`
+    const sendersP = db.execute<Record<string, unknown>>(sql`
       select m.id, m.email, m.from_name,
         count(*) filter (where e.type = 'sent')::int as sent,
         count(distinct e.contact_id) filter (where e.type = 'sent')::int as contacted,
         count(distinct e.message_id) filter (where e.type = 'opened')::int as opened,
         count(distinct e.contact_id) filter (where e.type = 'replied' and coalesce(e.meta->>'kind', 'reply') = 'reply')::int as replied,
         count(distinct e.contact_id) filter (where e.type = 'bounced')::int as bounced,
-        count(distinct e.contact_id) filter (where e.type = 'opted_out')::int as opted_out
+        count(distinct e.contact_id) filter (where e.type = 'opted_out')::int as opted_out,
+        (select count(*)::int from threads t join labels l on l.id = t.label_id
+           where t.mailbox_id = m.id and l.counts_as = 'positive' and t.last_message_at between ${from} and ${to} ${seqT}) as positive
       from mailboxes m
       left join events e on e.mailbox_id = m.id and e.occurred_at between ${from} and ${to} ${q.sequenceId ? sql`and e.sequence_id = ${q.sequenceId}` : sql``}
       where m.workspace_id = ${workspaceId}
       group by m.id order by sent desc, m.email
-    `) as unknown as Record<string, unknown>[];
+    `);
 
-    const variants = q.sequenceId ? await db.execute<Record<string, unknown>>(sql`
+    const variantsP = q.sequenceId ? db.execute<Record<string, unknown>>(sql`
       select st.position, st.name as step_name, v.id, v.label, v.subject,
         count(*) filter (where e.type = 'sent')::int as sent,
         count(distinct e.message_id) filter (where e.type = 'opened')::int as opened
@@ -79,18 +83,50 @@ export async function analyticsRoutes(app: FastifyInstance) {
       left join events e on e.variant_id = v.id and e.occurred_at between ${from} and ${to}
       where st.sequence_id = ${q.sequenceId}
       group by st.position, st.name, v.id, v.label, v.subject order by st.position, v.label
-    `) as unknown as Record<string, unknown>[] : [];
+    `) : Promise.resolve([]);
+
+    // The queries do not depend on each other, so they all run at the same time (each round trip to the database takes a moment).
+    const [totalsR, funnelR, dailyR, sendersR, variantsR] = await Promise.all([totalsP, funnelP, dailyP, sendersP, variantsP]);
+    const totals = (totalsR as unknown as Record<string, number>[])[0];
+    const funnel = (funnelR as unknown as Record<string, number>[])[0];
+    const daily = dailyR as unknown as { day: string; sent: number; replied: number; opened: number; bounced: number }[];
+    const senders = sendersR as unknown as Record<string, unknown>[];
+    const variants = variantsR as unknown as Record<string, unknown>[];
 
     return { range: { from, to }, totals, funnel, daily, senders, variants };
+  });
+
+  // The people in one sequence (or, with no sequence given, every contact in the workspace), with their details.
+  app.get("/v1/workspaces/:ws/reports/contact-list.csv", async (req, reply) => {
+    const q = query(req, z.object({ sequenceId: z.string().uuid().optional(), sequenceIds: z.string().optional() }));
+    // One sequence, or several (comma separated), or none for everyone in the workspace.
+    const ids = [...(q.sequenceId ? [q.sequenceId] : []), ...(q.sequenceIds ?? "").split(",").map((x) => x.trim()).filter((x) => /^[0-9a-f-]{36}$/i.test(x))];
+    const rows = await db.execute<Record<string, unknown>>(sql`
+      select c.email, c.first_name, c.last_name, c.title, c.company_name, c.linkedin_url, c.esp, c.validation_status, c.last_contacted_at, c.unsubscribed_at, c.created_at
+      from contacts c
+      where c.workspace_id = ${wsId(req)}
+        ${ids.length ? sql`and exists (select 1 from sequence_contacts sc where sc.contact_id = c.id and sc.sequence_id in (${sql.join(ids.map((i) => sql`${i}::uuid`), sql`, `)}))` : sql``}
+      order by c.created_at desc limit 200000
+    `) as unknown as Record<string, unknown>[];
+    const cols = ["email", "first_name", "last_name", "title", "company_name", "linkedin_url", "esp", "validation_status", "last_contacted_at", "unsubscribed_at", "created_at"];
+    const esc = (v: unknown) => {
+      let s = v instanceof Date ? v.toISOString() : String(v ?? "");
+      if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    reply.header("content-type", "text/csv").header("content-disposition", 'attachment; filename="contact-list.csv"');
+    return [cols.join(","), ...rows.map((r) => cols.map((c) => esc(r[c])).join(","))].join("\n");
   });
 
   app.get("/v1/workspaces/:ws/reports/messages.csv", async (req, reply) => {
     const q = query(req, rangeQuery);
     const workspaceId = wsId(req);
+    const msgIds = (q.sequenceIds ?? "").split(",").map((x) => x.trim()).filter((x) => /^[0-9a-f-]{36}$/i.test(x));
     const rows = await db.execute<Record<string, string>>(sql`
       select m.sent_at, m.direction, m.from_address, m.to_address, m.subject, s.name as sequence
       from messages m left join sequences s on s.id = m.sequence_id
       where m.workspace_id = ${workspaceId} ${q.sequenceId ? sql`and m.sequence_id = ${q.sequenceId}` : sql``}
+        ${msgIds.length ? sql`and m.sequence_id in (${sql.join(msgIds.map((i) => sql`${i}::uuid`), sql`, `)})` : sql``}
         ${q.from ? sql`and m.sent_at >= ${q.from.toISOString()}` : sql``} ${q.to ? sql`and m.sent_at <= ${q.to.toISOString()}` : sql``}
       order by m.sent_at desc limit 100000
     `) as unknown as Record<string, unknown>[];

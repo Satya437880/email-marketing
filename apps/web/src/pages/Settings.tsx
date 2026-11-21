@@ -2,7 +2,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ban, Check, ChevronDown, Copy, Download, HelpCircle, KeyRound, Mail, Plus, Search, Settings as SettingsIcon, Trash2, User as UserIcon, UserPlus, UserX, Webhook } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { TimezoneSelect } from "../TimezoneSelect";
 import { api, ApiError, type Paged } from "../api";
 import { useMe, useWs } from "../App";
 import { cx, Empty, fmtDate, Modal, PageHeader, Pager, PortalMenu, Spinner, Toggle, useToast } from "../ui";
@@ -10,7 +9,7 @@ import { cx, Empty, fmtDate, Modal, PageHeader, Pager, PortalMenu, Spinner, Togg
 type TabKey = "usage" | "team" | "integrations" | "dnc" | "api" | "notifications";
 
 const TABS: { k: TabKey; label: string; help?: string }[] = [
-  { k: "usage", label: "Usage", help: "Contacts, emails and mailboxes this workspace is using, plus workspace name and time zone." },
+  { k: "usage", label: "Usage", help: "Contacts, emails and mailboxes this workspace is using." },
   { k: "team", label: "Users & Roles", help: "Who can access this workspace and what they can do." },
   { k: "integrations", label: "Integrations", help: "Connected services such as Google and Microsoft sign-in." },
   { k: "dnc", label: "DNC list", help: "Emails and domains that are never contacted." },
@@ -40,30 +39,6 @@ export function SettingsPage() {
         {tab === "api" && <ApiTab />}
         {tab === "notifications" && <NotificationsTab />}
       </div>
-    </div>
-  );
-}
-
-function WorkspaceTab() {
-  const ws = useWs();
-  const me = useMe();
-  const qc = useQueryClient();
-  const toast = useToast();
-  const current = me.data?.workspaces.find((w) => w.slug === ws);
-  const [name, setName] = useState(current?.name ?? "");
-  const [timezone, setTimezone] = useState(current?.timezone ?? "UTC");
-  const save = useMutation({
-    mutationFn: () => api(`/v1/workspaces/${ws}`, { method: "PATCH", body: { name, timezone } }),
-    onSuccess: () => { toast("Workspace saved"); qc.invalidateQueries({ queryKey: ["me"] }); },
-  });
-  return (
-    <div className="card p-5 max-w-xl space-y-4">
-      <div><label className="label">Workspace name</label><input className="input" value={name} onChange={(e) => setName(e.target.value)} /></div>
-      <div><label className="label">Default time zone for new sequences</label>
-        <TimezoneSelect value={timezone} onChange={setTimezone} />
-      </div>
-      <div className="text-xs text-ink-500">Workspace URL: /{ws}</div>
-      <button className="btn-primary" onClick={() => save.mutate()}>Save</button>
     </div>
   );
 }
@@ -305,10 +280,6 @@ function UsageTab() {
             <Meter label="Sequences" value={u.data.active_sequences ?? 0} sub={`active of ${u.data.sequences ?? 0} · ${u.data.members ?? 0} members`} />
           </div>
         )}
-      </div>
-      <div>
-        <SectionHeader title="Workspace" text="Name and default time zone for new sequences." />
-        <WorkspaceTab />
       </div>
     </div>
   );

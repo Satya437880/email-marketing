@@ -4,7 +4,7 @@ import { addDnc, assertPublicHttpsUrl, removeDncEntries, sendTestEvent } from "@
 import { and, asc, desc, eq, ilike, inArray, isNull, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { API_KEY_PREFIX, hashApiKey, hashPassword, requireRole, requireUser, wsId } from "../auth";
+import { API_KEY_PREFIX, clearAuthCache, hashApiKey, hashPassword, requireRole, requireUser, wsId } from "../auth";
 import { body, HttpError, idParams, params, query } from "../http";
 
 // Throws if `userId` is the only admin (or owner) left, because removing or demoting them would lock everyone out of settings.
@@ -22,7 +22,23 @@ export async function workspaceRoutes(app: FastifyInstance) {
       try { new Intl.DateTimeFormat("en", { timeZone: b.timezone }); } catch { throw new HttpError(400, "invalid_timezone", "Unknown time zone"); }
     }
     const [ws] = await db.update(workspaces).set(b).where(eq(workspaces.id, wsId(req))).returning();
+    clearAuthCache();
     return ws;
+  });
+
+  // Deletes the workspace and everything in it (mailboxes, contacts, sequences, emails). Owner only, and never someone's last workspace.
+  app.delete("/v1/workspaces/:ws", async (req) => {
+    requireRole(req, "owner");
+    const user = requireUser(req);
+    const b = body(req, z.object({ confirmName: z.string() }));
+    const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, wsId(req)) });
+    if (!ws) throw new HttpError(404, "not_found", "Workspace not found");
+    if (b.confirmName.trim() !== ws.name) throw new HttpError(400, "name_mismatch", "Type the workspace name exactly to confirm");
+    const mine = await db.select({ id: memberships.workspaceId }).from(memberships).where(eq(memberships.userId, user.id));
+    if (mine.length < 2) throw new HttpError(400, "last_workspace", "You can't delete your only workspace. Create another one first.");
+    await db.delete(workspaces).where(eq(workspaces.id, ws.id));
+    clearAuthCache();
+    return { ok: true };
   });
 
   // "Add existing user": people already in your account's other workspaces (so they have signed in before) who are not in this one yet.
@@ -74,6 +90,7 @@ export async function workspaceRoutes(app: FastifyInstance) {
   });
 
   app.patch("/v1/workspaces/:ws/members/:id", async (req) => {
+    clearAuthCache();
     requireRole(req, "owner", "admin");
     const p = params(req, idParams);
     const b = body(req, z.object({ role: z.enum(["admin", "member", "viewer", "primebox"]) }));
@@ -130,6 +147,7 @@ export async function workspaceRoutes(app: FastifyInstance) {
   });
 
   app.delete("/v1/workspaces/:ws/members/:id", async (req) => {
+    clearAuthCache();
     requireRole(req, "owner", "admin");
     const p = params(req, idParams);
     await assertAnotherAdmin(wsId(req), p.id);

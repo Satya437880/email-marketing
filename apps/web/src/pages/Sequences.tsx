@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, Copy, FileText, GitBranch, HelpCircle, MoreHorizontal, Plus, Search, Send, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { ArrowRight, Check, ChevronRight, Copy, FileText, GitBranch, HelpCircle, MoreHorizontal, Pencil, Plus, RotateCcw, Search, Send, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
+import { ReportsModal } from "../ReportsModal";
 import { api, type SenderProfile, type SequenceRow } from "../api";
 import { useWs } from "../App";
-import { cx, Empty, fmtDate, Modal, PageHeader, pct, PortalMenu, Progress, Spinner, StatusPill, Toggle, useToast } from "../ui";
+import { cx, Empty, fmtDate, Modal, PageHeader, PagerBar, pct, PortalMenu, Progress, Spinner, StatusPill, Toggle, useToast } from "../ui";
 
 function useOutsideClose(open: boolean, close: () => void) {
   const ref = useRef<HTMLDivElement>(null);
@@ -21,23 +22,11 @@ function useOutsideClose(open: boolean, close: () => void) {
 
 function ReportingMenu({ ws }: { ws: string }) {
   const [open, setOpen] = useState(false);
-  const ref = useOutsideClose(open, () => setOpen(false));
-  const item = (href: string, title: string, text: string) => (
-    <a href={href} className="block rounded-md px-3 py-2 hover:bg-ink-50" onClick={() => setOpen(false)}>
-      <div className="text-sm font-medium">{title}</div>
-      <div className="text-xs text-ink-500">{text}</div>
-    </a>
-  );
   return (
-    <div className="relative" ref={ref}>
-      <button className="btn-secondary" onClick={() => setOpen((o) => !o)}><FileText size={16} /> Reporting</button>
-      {open && (
-        <div className="absolute right-0 top-11 z-30 w-72 card p-1.5">
-          {item(`/v1/workspaces/${ws}/reports/sequence-contacts.csv`, "Contacts report", "Every contact in every sequence, with status and progress (CSV)")}
-          {item(`/v1/workspaces/${ws}/reports/messages.csv`, "All emails", "Every email sent and received (CSV)")}
-        </div>
-      )}
-    </div>
+    <>
+      <button className="btn-secondary" onClick={() => setOpen(true)}><FileText size={16} /> Reporting</button>
+      {open && <ReportsModal ws={ws} onClose={() => setOpen(false)} />}
+    </>
   );
 }
 
@@ -45,43 +34,74 @@ interface SeqFilters { status: string[]; priority: string; senderId: string }
 const NO_FILTERS: SeqFilters = { status: [], priority: "", senderId: "" };
 
 function SeqFiltersButton({ ws, value, onChange }: { ws: string; value: SeqFilters; onChange: (f: SeqFilters) => void }) {
-  const [open, setOpen] = useState(false);
-  const ref = useOutsideClose(open, () => setOpen(false));
-  const profiles = useQuery({ queryKey: ["sender-profiles", ws], queryFn: () => api<SenderProfile[]>(`/v1/workspaces/${ws}/sender-profiles`), enabled: open });
-  const count = value.status.length + (value.priority ? 1 : 0) + (value.senderId ? 1 : 0);
+  // Opened inside a floating layer (PortalMenu), so the table's edges can't cut the panel off.
+  const [cat, setCat] = useState<"status" | "priority" | "rotation">("status");
+  const [search, setSearch] = useState("");
+  const profiles = useQuery({ queryKey: ["sender-profiles", ws], queryFn: () => api<SenderProfile[]>(`/v1/workspaces/${ws}/sender-profiles`), });
+  const counts = { status: value.status.length, priority: value.priority ? 1 : 0, rotation: value.senderId ? 1 : 0 };
+  const count = counts.status + counts.priority + counts.rotation;
+
+  const categories: { key: typeof cat; label: string }[] = [
+    { key: "status", label: "Status" }, { key: "priority", label: "Priority" }, { key: "rotation", label: "Rotation" },
+  ];
+  // Options of the open category: id, label and whether it is ticked.
+  const options: { id: string; label: string; on: boolean; pick: () => void }[] = cat === "status"
+    ? [["active", "In progress"], ["draft", "Draft"], ["completed", "Finished"], ["paused", "Disabled"]].map(([id, label]) => ({
+        id: id!, label: label!, on: value.status.includes(id!),
+        pick: () => onChange({ ...value, status: value.status.includes(id!) ? value.status.filter((x) => x !== id) : [...value.status, id!] }),
+      }))
+    : cat === "priority"
+      ? [["high", "High"], ["regular", "Regular"]].map(([id, label]) => ({ id: id!, label: label!, on: value.priority === id, pick: () => onChange({ ...value, priority: value.priority === id ? "" : id! }) }))
+      : (profiles.data ?? []).map((p) => ({ id: p.id, label: p.name, on: value.senderId === p.id, pick: () => onChange({ ...value, senderId: value.senderId === p.id ? "" : p.id }) }));
+  const shown = options.filter((o) => o.label.toLowerCase().includes(search.trim().toLowerCase()));
+
   return (
-    <div className="relative" ref={ref}>
-      <button className={cx("btn-secondary", count > 0 && "border-brand-500 text-brand-700")} onClick={() => setOpen((o) => !o)}>
+    <PortalMenu align="left" width={620} trigger={
+      <button className={cx("btn-secondary", count > 0 && "border-brand-500 text-brand-700")}>
         <SlidersHorizontal size={15} /> Filters{count > 0 && <span className="chip bg-brand-600 text-white">{count}</span>}
       </button>
-      {open && (
-        <div className="absolute left-0 top-11 z-30 w-72 card p-4 space-y-4">
-          <div>
-            <div className="label">Status</div>
-            <div className="flex flex-wrap gap-1.5">
-              {["draft", "active", "completed"].map((s) => (
-                <button key={s} className={cx("btn-sm btn capitalize", value.status.includes(s) ? "bg-brand-600 text-white" : "bg-ink-100")}
-                  onClick={() => onChange({ ...value, status: value.status.includes(s) ? value.status.filter((x) => x !== s) : [...value.status, s] })}>{s}</button>
-              ))}
+    }>
+      {() => (
+        <div className="-m-1.5">
+          <div className="flex">
+            <div className="w-56 shrink-0 bg-ink-50/70 border-r border-ink-100">
+              <div className="px-4 py-3 text-sm font-semibold text-ink-500">Filters</div>
+              <div className="p-2.5 space-y-1">
+                {categories.map((c) => (
+                  <button key={c.key} className={cx("w-full flex items-center gap-2 rounded-lg px-3 h-10 text-[15px] text-left", cat === c.key ? "bg-ink-100 text-ink-900 font-medium" : "text-ink-700 hover:bg-ink-100/70")}
+                    onClick={() => { setCat(c.key); setSearch(""); }}>
+                    <span className="flex-1">{c.label}</span>
+                    {counts[c.key] > 0 && <span className="min-w-[20px] h-5 px-1 grid place-items-center rounded-md bg-brand-600 text-xs font-medium text-white">{counts[c.key]}</span>}
+                    <ChevronRight size={16} className="text-ink-500" />
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="px-4 pt-3 border-b border-ink-100"><span className="inline-block pb-2.5 -mb-px border-b-2 border-brand-600 text-sm font-semibold text-brand-700">Include</span></div>
+              <div className="p-3">
+                <div className="relative">
+                  <Search size={17} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-ink-500" />
+                  <input className="input h-11 pl-10 rounded-xl" placeholder="Search" value={search} onChange={(e) => setSearch(e.target.value)} />
+                </div>
+                <div className="mt-2 max-h-64 overflow-y-auto">
+                  {!shown.length ? <div className="px-3 py-3 text-sm text-ink-400">{cat === "rotation" && profiles.isLoading ? "Loading…" : "Nothing found"}</div> : shown.map((o) => (
+                    <button key={o.id} className="w-full flex items-center gap-3 rounded-lg px-3 h-11 text-[15px] text-ink-800 text-left hover:bg-ink-50" onClick={o.pick}>
+                      <span className={cx("grid place-items-center w-5 h-5 rounded-md border shrink-0", o.on ? "bg-brand-600 border-brand-600 text-white" : "border-ink-300")}>{o.on && <Check size={13} strokeWidth={3} />}</span>
+                      <span className="flex-1 truncate">{o.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
-          <div>
-            <div className="label">Priority</div>
-            <select className="input" value={value.priority} onChange={(e) => onChange({ ...value, priority: e.target.value })}>
-              <option value="">Any</option><option value="high">High</option><option value="regular">Regular</option>
-            </select>
+          <div className="sticky bottom-0 flex items-center justify-between gap-3 px-4 py-3 border-t border-ink-100 bg-surface">
+            <button className="btn-secondary btn-sm" disabled={count === 0} onClick={() => { onChange(NO_FILTERS); setSearch(""); }}><RotateCcw size={14} /> Reset filters</button>
+            <span className="text-xs text-ink-500">{count ? `${count} filter${count === 1 ? "" : "s"} on` : "No filters on"}</span>
           </div>
-          <div>
-            <div className="label">Rotation</div>
-            <select className="input" value={value.senderId} onChange={(e) => onChange({ ...value, senderId: e.target.value })}>
-              <option value="">Any</option>
-              {(profiles.data ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-          </div>
-          {count > 0 && <button className="text-sm text-red-600 flex items-center gap-1" onClick={() => onChange(NO_FILTERS)}><X size={14} /> Clear filters</button>}
         </div>
       )}
-    </div>
+    </PortalMenu>
   );
 }
 
@@ -150,14 +170,14 @@ function SequenceList({ onCreate }: { onCreate: () => void }) {
   const list = useQuery({ queryKey: ["sequences", ws], queryFn: () => api<SequenceRow[]>(`/v1/workspaces/${ws}/sequences`), refetchInterval: 30_000 });
   const refresh = () => qc.invalidateQueries({ queryKey: ["sequences", ws] });
 
-  // Switching a draft on launches it. A launched sequence keeps running; there is no pause.
+  // Switching a draft (or a completed sequence) on launches it. A running sequence keeps running; there is no pause.
   const toggle = useMutation({
     mutationFn: async (s: SequenceRow) => {
       await api(`/v1/workspaces/${ws}/sequences/${s.id}/launch`, { body: {} });
       return { name: s.name };
     },
     onSuccess: ({ name }) => {
-      toast(`"${name}" launched — sending starts in its next send window`);
+      toast(`"${name}" is active — sending starts in its next send window`);
       refresh();
     },
     onError: (e: Error) => toast(e.message, "error"),
@@ -183,9 +203,15 @@ function SequenceList({ onCreate }: { onCreate: () => void }) {
     && (!filters.status.length || filters.status.includes(s.status))
     && (!filters.priority || s.priority === filters.priority)
     && (!filters.senderId || s.senders.some((x) => x.id === filters.senderId)));
-  const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
+  // The list is paged in the browser: 10 rows at first, changeable from the bar under the table (the choice is remembered).
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(() => { try { return Number(localStorage.getItem("seq-page-size")) || 10; } catch { return 10; } });
+  const pages = Math.max(1, Math.ceil(rows.length / pageSize));
+  useEffect(() => { setPage(1); }, [q, filters, pageSize]);
+  const pageRows = rows.slice((Math.min(page, pages) - 1) * pageSize, Math.min(page, pages) * pageSize);
+  const allSelected = pageRows.length > 0 && pageRows.every((r) => selected.has(r.id));
   const num = (n: number, of: number) => (
-    <div className="text-right"><div>{n.toLocaleString()}</div>{of > 0 && <div className="text-[11px] text-ink-400">{pct(n / of)}</div>}</div>
+    <div className="text-right"><div>{n.toLocaleString()}</div>{of > 0 && <div className="text-xs text-ink-400">{pct(n / of)}</div>}</div>
   );
 
   return (
@@ -214,7 +240,7 @@ function SequenceList({ onCreate }: { onCreate: () => void }) {
           <table className="w-full">
             <thead>
               <tr>
-                <th className="th w-10"><input type="checkbox" checked={allSelected} onChange={(e) => setSelected(e.target.checked ? new Set(rows.map((r) => r.id)) : new Set())} /></th>
+                <th className="th w-10"><input type="checkbox" checked={allSelected} onChange={(e) => setSelected((x) => { const n = new Set(x); pageRows.forEach((r) => (e.target.checked ? n.add(r.id) : n.delete(r.id))); return n; })} /></th>
                 <th className="th">Name</th>
                 <th className="th">Progress</th>
                 <th className="th text-right">Contacts</th>
@@ -228,7 +254,7 @@ function SequenceList({ onCreate }: { onCreate: () => void }) {
               </tr>
             </thead>
             <tbody>
-              {rows.map((s) => (
+              {pageRows.map((s) => (
                 <tr key={s.id} className={cx("hover:bg-ink-50/60 cursor-pointer", selected.has(s.id) && "bg-brand-50/40")} onClick={() => nav(`/${ws}/sequences/${s.id}`)}>
                   <td className="td" onClick={(e) => e.stopPropagation()}>
                     <input type="checkbox" checked={selected.has(s.id)} onChange={(e) => setSelected((x) => { const n = new Set(x); e.target.checked ? n.add(s.id) : n.delete(s.id); return n; })} />
@@ -238,10 +264,11 @@ function SequenceList({ onCreate }: { onCreate: () => void }) {
                       <span onClick={(e) => e.stopPropagation()}>
                         <Toggle
                           checked={s.status === "active"}
-                          disabled={s.status !== "draft" || (toggle.isPending && toggle.variables?.id === s.id)}
-                          title={{ draft: "Draft — switch on to launch", active: "Active", paused: "Active", completed: "Completed" }[s.status]}
+                          disabled={(s.status !== "draft" && s.status !== "completed") || (toggle.isPending && toggle.variables?.id === s.id)}
+                          title={{ draft: "Draft — switch on to launch", active: "Active", paused: "Active", completed: "Completed — switch on to activate it again" }[s.status]}
                           onChange={() => {
                             if (s.status === "draft" && !confirm(`Launch "${s.name}"? Emails start sending in its next send window.`)) return;
+                            if (s.status === "completed" && !confirm(`Activate "${s.name}" again? Contacts added to it will start sending in its next send window.`)) return;
                             toggle.mutate(s);
                           }}
                         />
@@ -259,8 +286,12 @@ function SequenceList({ onCreate }: { onCreate: () => void }) {
                   <td className="td">{num(s.positive, s.contacted)}</td>
                   <td className="td text-right" onClick={(e) => e.stopPropagation()}>
                     <RowMenu>{(close) => <>
-                      <button className={menuItem} onClick={() => { close(); nav(`/${ws}/sequences/${s.id}`); }}><Send size={14} /> Open</button>
-                      <button className={menuItem} onClick={() => { close(); dup.mutate(s.id); }}><Copy size={14} /> Duplicate</button>
+                      {s.status === "completed" ? <>
+                        <button className={menuItem} onClick={() => { close(); if (confirm(`Mark "${s.name}" as incomplete? It becomes active again and sends to any contacts or emails that are still waiting, in its next send window.`)) toggle.mutate(s); }}><RotateCcw size={14} /> Mark as incomplete</button>
+                        <button className={menuItem} onClick={() => { close(); dup.mutate(s.id); }}><Copy size={14} /> Duplicate</button>
+                      </> : (
+                        <button className={menuItem} onClick={() => { close(); nav(`/${ws}/sequences/${s.id}/edit`); }}><Pencil size={14} /> Edit</button>
+                      )}
                       <button className={cx(menuItem, "text-red-600")} onClick={() => { close(); if (confirm(`Delete "${s.name}"? This removes its stats too.`)) del.mutate(s.id); }}><Trash2 size={14} /> Delete</button>
                     </>}</RowMenu>
                   </td>
@@ -270,6 +301,7 @@ function SequenceList({ onCreate }: { onCreate: () => void }) {
           </table>
         </div>
       )}
+      {!!rows.length && <PagerBar page={Math.min(page, pages)} pageSize={pageSize} total={rows.length} onPage={setPage} onPageSize={(n) => { setPageSize(n); try { localStorage.setItem("seq-page-size", String(n)); } catch { /* not saved */ } }} />}
     </div>
   );
 }

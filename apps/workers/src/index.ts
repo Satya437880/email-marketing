@@ -53,7 +53,8 @@ async function plan() {
   planning = true;
   try {
     const { jobs, stats } = await planTick();
-    if (stats.considered) log("plan", stats);
+    // One line on every tick, even when nothing is due. "sent" = emails queued for sending this tick.
+    log("plan_tick", { due: stats.considered, sent: stats.send, skipped: (stats.reschedule ?? 0) + (stats.stop ?? 0) });
     // jobId makes enqueueing idempotent if a tick is retried.
     await sendQueue.addBulk(jobs.map((data) => ({
       name: "send",

@@ -214,6 +214,7 @@ export function StepBuilder({ steps, onChange }: { steps: Step[]; onChange: (ste
                       embedded
                       canReply={i > 0}
                       replySubject={threadSubject(i)}
+                      earlier={blocks.slice(0, i).map((x) => ({ subject: x.variants[0]?.subject ?? "", bodyHtml: x.variants[0]?.bodyHtml ?? "" }))}
                       stats={{ sent: b.sent ?? 0, waiting: b.waiting ?? 0 }}
                       editorKey={`${i}-${vi}-${b.id ?? "new"}`}
                       stepName={b.name}

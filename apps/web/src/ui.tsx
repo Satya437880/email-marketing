@@ -1,4 +1,4 @@
-import { X } from "lucide-react";
+import { ArrowLeft, ArrowRight, ChevronDown, X } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
@@ -209,6 +209,28 @@ export function Pager({ page, pageSize, total, onPage }: { page: number; pageSiz
         <button className="btn-secondary btn-sm" disabled={page <= 1} onClick={() => onPage(page - 1)}>Prev</button>
         <button className="btn-secondary btn-sm" disabled={page >= pages} onClick={() => onPage(page + 1)}>Next</button>
       </div>
+    </div>
+  );
+}
+
+// "Per page: 10 rows   Page 1 of 10   <- ->" for lists that hold all their rows in the browser.
+export function PagerBar({ page, pageSize, total, onPage, onPageSize, sizes = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50] }: {
+  page: number; pageSize: number; total: number; onPage: (p: number) => void; onPageSize: (n: number) => void; sizes?: number[];
+}) {
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  const arrow = "grid place-items-center w-10 h-10 rounded-xl border border-ink-200 bg-surface text-ink-800 hover:bg-ink-50 disabled:text-ink-300 disabled:bg-ink-50 disabled:cursor-not-allowed";
+  return (
+    <div className="flex flex-wrap items-center justify-end gap-3 px-4 py-3 border-t border-ink-100 text-sm text-ink-700">
+      <span>Per page:</span>
+      <div className="relative">
+        <select className="h-10 appearance-none rounded-xl border border-ink-200 bg-surface pl-4 pr-10 text-sm text-ink-800 focus:outline-none" value={pageSize} onChange={(e) => onPageSize(Number(e.target.value))} aria-label="Rows per page">
+          {sizes.map((n) => <option key={n} value={n}>{n} rows</option>)}
+        </select>
+        <ChevronDown size={16} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-ink-500" />
+      </div>
+      <span>Page {page} of {pages}</span>
+      <button className={arrow} disabled={page <= 1} onClick={() => onPage(page - 1)} aria-label="Previous page"><ArrowLeft size={18} /></button>
+      <button className={arrow} disabled={page >= pages} onClick={() => onPage(page + 1)} aria-label="Next page"><ArrowRight size={18} /></button>
     </div>
   );
 }

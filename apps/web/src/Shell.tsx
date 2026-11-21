@@ -1,10 +1,10 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { BarChart3, Check, ChevronsLeft, ChevronsRight, Inbox, LogOut, Mail, Menu, Moon, Send, Settings, Sun, Users, X } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { BarChart3, Building2, Check, ChevronDown, ChevronsLeft, ChevronsRight, Inbox, LogOut, Mail, Menu, Moon, Pencil, Send, Settings, Sun, Trash2, Users, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { api, type Me, type Workspace } from "./api";
 import { useTheme, type ThemePref } from "./theme";
-import { Avatar, cx } from "./ui";
+import { Avatar, cx, Modal, useToast } from "./ui";
 
 export function Logo({ collapsed }: { collapsed?: boolean }) {
   return (
@@ -95,6 +95,8 @@ export function Shell({ me, workspace, children }: { me: Me; workspace: Workspac
     return () => window.removeEventListener("keydown", h);
   }, []);
 
+  const [picker, setPicker] = useState(false);
+
   const inboxOnly = workspace.role === "primebox";
   const items = [
     { to: `${base}/inbox`, label: "Primebox", icon: <Inbox size={18} />, badge: counts.data?.unread },
@@ -111,6 +113,8 @@ export function Shell({ me, workspace, children }: { me: Me; workspace: Workspac
     nav("/login");
   };
 
+  const pickerModal = picker && <WorkspaceSelector me={me} workspace={workspace} onClose={() => setPicker(false)} />;
+
   const sidebar = (
     <aside className={cx("flex flex-col h-full bg-surface border-r border-ink-200 transition-all", collapsed ? "w-[68px]" : "w-[248px]")}>
       <div className="flex items-center justify-between h-16 px-4">
@@ -122,14 +126,13 @@ export function Shell({ me, workspace, children }: { me: Me; workspace: Workspac
       </div>
       {!collapsed && (
         <div className="mx-3 mb-3 rounded-lg border border-ink-200 px-3 py-2">
-          <div className="text-[11px] uppercase tracking-wide text-ink-400">Workspace</div>
-          <select
-            className="w-full bg-transparent text-sm font-medium text-ink-800 focus:outline-none"
-            value={workspace.slug}
-            onChange={(e) => nav(`/${e.target.value}/inbox`)}
-          >
-            {me.workspaces.map((w) => <option key={w.id} value={w.slug}>{w.name}</option>)}
-          </select>
+          <div className="text-xs uppercase tracking-wide text-ink-400">Workspace</div>
+            <div className="flex items-center gap-1">
+              <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink-800" title={workspace.name}>{workspace.name}</span>
+              <button className="shrink-0 grid place-items-center w-7 h-7 rounded-md text-ink-500 hover:text-ink-800 hover:bg-ink-100" title="Switch, create or delete workspaces" aria-label="Workspace selector" onClick={() => setPicker(true)}>
+                <ChevronDown size={16} />
+              </button>
+            </div>
         </div>
       )}
       <nav className="flex-1 px-3 space-y-0.5">
@@ -175,6 +178,7 @@ export function Shell({ me, workspace, children }: { me: Me; workspace: Workspac
 
   return (
     <div className="flex h-full">
+      {pickerModal}
       <div className="hidden md:block shrink-0">{sidebar}</div>
       {mobileOpen && (
         <div className="fixed inset-0 z-40 md:hidden">
@@ -190,5 +194,74 @@ export function Shell({ me, workspace, children }: { me: Me; workspace: Workspac
         <div className="flex-1 overflow-y-auto">{children}</div>
       </main>
     </div>
+  );
+}
+
+// Pick another workspace, rename the open one, create a new one, or delete the open one.
+function WorkspaceSelector({ me, workspace, onClose }: { me: Me; workspace: Workspace; onClose: () => void }) {
+  const nav = useNavigate();
+  const qc = useQueryClient();
+  const toast = useToast();
+  const isOwner = workspace.role === "owner";
+  const canRename = isOwner || workspace.role === "admin";
+  const [name, setName] = useState("");
+  const [editing, setEditing] = useState(false);
+  const create = useMutation({
+    mutationFn: (n: string) => api<Workspace>("/v1/workspaces", { body: { name: n } }),
+    onSuccess: async (w) => { await qc.invalidateQueries({ queryKey: ["me"] }); toast(`Workspace "${w.name}" created`); onClose(); nav(`/${w.slug}/inbox`); },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+  const rename = useMutation({
+    mutationFn: (n: string) => api(`/v1/workspaces/${workspace.slug}`, { method: "PATCH", body: { name: n } }),
+    onSuccess: async () => { await qc.invalidateQueries({ queryKey: ["me"] }); toast("Workspace renamed"); setEditing(false); setName(""); },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+  const del = useMutation({
+    mutationFn: (confirmName: string) => api(`/v1/workspaces/${workspace.slug}`, { method: "DELETE", body: { confirmName } }),
+    onSuccess: async () => {
+      const next = me.workspaces.find((w) => w.id !== workspace.id);
+      await qc.invalidateQueries({ queryKey: ["me"] });
+      toast(`Workspace "${workspace.name}" deleted`);
+      onClose();
+      nav(next ? `/${next.slug}/inbox` : "/");
+    },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+  const askDelete = () => {
+    if (me.workspaces.length < 2) { toast("You can't delete your only workspace. Create another one first.", "error"); return; }
+    const typed = window.prompt(`This deletes "${workspace.name}" and everything in it: mailboxes, contacts, sequences and emails. It cannot be undone.
+
+Type the workspace name to confirm:`);
+    if (typed === null) return;
+    del.mutate(typed);
+  };
+  const submit = () => {
+    const n = name.trim();
+    if (!n) return;
+    if (editing) rename.mutate(n); else create.mutate(n);
+  };
+  const iconBtn = "grid place-items-center w-11 h-11 shrink-0 rounded-xl border border-ink-200 bg-surface text-ink-700 hover:bg-ink-50 disabled:opacity-40 disabled:cursor-not-allowed";
+
+  return (
+    <Modal open onClose={onClose} title="Workspace selector" icon={<Building2 size={20} />}>
+      <label className="label">Workspace</label>
+      <div className="flex items-center gap-3">
+        <div className="relative flex-1 min-w-0">
+          <select className="input appearance-none pr-10" value={workspace.slug} onChange={(e) => { onClose(); nav(`/${e.target.value}/inbox`); }}>
+            {me.workspaces.map((w) => <option key={w.id} value={w.slug}>{w.name}</option>)}
+          </select>
+          <ChevronDown size={16} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-ink-500" />
+        </div>
+        <button className={iconBtn} title={canRename ? "Rename this workspace" : "Only owners and admins can rename"} aria-label="Rename workspace" disabled={!canRename} onClick={() => { setEditing(true); setName(workspace.name); }}><Pencil size={18} /></button>
+        <button className={iconBtn} title={isOwner ? "Delete this workspace" : "Only the owner can delete a workspace"} aria-label="Delete workspace" disabled={!isOwner || del.isPending} onClick={askDelete}><Trash2 size={18} /></button>
+      </div>
+
+      <label className="label mt-4">{editing ? "Rename workspace" : "Workspace name"}</label>
+      <input className="input" value={name} maxLength={100} placeholder="Enter new workspace name" onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} />
+      <button className="btn-primary w-full h-11 mt-4" disabled={!name.trim() || create.isPending || rename.isPending} onClick={submit}>
+        {editing ? (rename.isPending ? "Saving…" : "Save name") : (create.isPending ? "Creating…" : "Create a new workspace")}
+      </button>
+      {editing && <button className="btn-ghost w-full mt-2" onClick={() => { setEditing(false); setName(""); }}>Cancel rename</button>}
+    </Modal>
   );
 }

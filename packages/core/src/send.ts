@@ -3,7 +3,7 @@ import {
   contacts, db, events, mailboxes, messages, sequenceContacts, sequences, sequenceSteps, stepVariants, threads,
 } from "@outreach/db";
 import { alignToWindow, localDayKey, nextEmailStep, pickVariant } from "@outreach/engine";
-import { composeEmail, domainAcceptsMail, render, sendSmtp, type Variables } from "@outreach/mail";
+import { buildQuoteHistory, composeEmail, domainAcceptsMail, render, sendSmtp, type Variables } from "@outreach/mail";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { connectionFor } from "./mailbox";
 import type { SendJob } from "./planner";
@@ -107,15 +107,32 @@ export async function executeSend(job: SendJob, opts: { trackingBaseUrl: string;
   const continueThread = !!thread && renderedSubject === "";
   let threadHeaders: { inReplyTo: string; references: string[] } | undefined;
   let quote: { html: string; text: string; from: string; sentAt: Date } | undefined;
+  const contactRow = await db.query.contacts.findFirst({ where: eq(contacts.id, sc.contactId) });
+  const threadNames: Record<string, string> = { [mailbox.email.toLowerCase()]: mailbox.fromName };
+  if (contactRow) threadNames[contactRow.email.toLowerCase()] = `${contactRow.firstName} ${contactRow.lastName}`.trim();
   if (continueThread && thread) {
     const prior = await db.select({ mid: messages.messageIdHeader, refs: messages.references, html: messages.bodyHtml, text: messages.bodyText, name: messages.fromName, addr: messages.fromAddress, at: messages.sentAt })
       .from(messages).where(and(eq(messages.threadId, thread.id), eq(messages.direction, "out"))).orderBy(desc(messages.sentAt)).limit(1);
+    // The quoted history is rebuilt from every earlier message in the thread (newest first), so it is whole even if an earlier email was
+    // sent before quoting existed, and it includes any replies from the contact.
+    const all = await db.select({ direction: messages.direction, fromName: messages.fromName, fromAddress: messages.fromAddress, toAddress: messages.toAddress, subject: messages.subject, sentAt: messages.sentAt, bodyHtml: messages.bodyHtml, bodyText: messages.bodyText })
+      .from(messages).where(eq(messages.threadId, thread.id));
     if (prior[0]) {
       threadHeaders = { inReplyTo: prior[0].mid, references: [...prior[0].refs, prior[0].mid].slice(-10) };
-      quote = { html: prior[0].html, text: prior[0].text, from: `${prior[0].name} <${prior[0].addr}>`.trim(), sentAt: prior[0].at };
+      quote = buildQuoteHistory(all, { timeZone: mailbox.timezone, names: threadNames }) ?? { html: prior[0].html, text: prior[0].text, from: `${prior[0].name} <${prior[0].addr}>`.trim(), sentAt: prior[0].at };
     }
   }
-  const subject = continueThread && thread ? thread.subject : renderedSubject || "(no subject)";
+  // Follow-ups are written with an empty subject so they reply in the contact's thread. A contact with no thread to reply in (they never
+  // got the first email) would otherwise receive "(no subject)", so the sequence's first email subject is used instead.
+  let openerSubject = "";
+  if (!continueThread && renderedSubject === "") {
+    const firstEmail = steps.find((s) => s.type === "email");
+    if (firstEmail && firstEmail.id !== step.id) {
+      const [v] = await db.select().from(stepVariants).where(eq(stepVariants.stepId, firstEmail.id)).orderBy(asc(stepVariants.label)).limit(1);
+      if (v) openerSubject = render(v.subject, vars, { seed: `${seed}:s0` }).trim();
+    }
+  }
+  const subject = continueThread && thread ? thread.subject : renderedSubject || openerSubject || "(no subject)";
 
   const token = trackingToken();
   const base = mailbox.trackingDomain && mailbox.trackingDomainVerified ? `https://${mailbox.trackingDomain}` : opts.trackingBaseUrl.replace(/\/$/, "");
@@ -127,7 +144,7 @@ export async function executeSend(job: SendJob, opts: { trackingBaseUrl: string;
     attachments: variant.attachments,
     signatureHtml: renderSignature(mailbox, `${seed}:sig`),
     plainText: settings.plainText,
-    optOut: settings.optOut.enabled ? { url: `${base}/u/${token}`, text: settings.optOut.text } : null,
+    optOut: settings.optOut.enabled ? { url: `${base}/u/${token}`, text: settings.optOut.text, replyOnly: settings.optOut.replyOnly } : null,
     openPixelUrl: settings.trackOpens ? `${base}/t/o/${token}` : null,
     clickRewrite: settings.trackClicks ? (u) => `${base}/t/c/${token}?u=${encodeURIComponent(u)}` : null,
     thread: threadHeaders,

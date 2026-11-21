@@ -179,9 +179,12 @@ export async function mailboxRoutes(app: FastifyInstance) {
   });
 
   app.get("/v1/workspaces/:ws/mailboxes", async (req) => {
-    const list = await db.select().from(mailboxes).where(eq(mailboxes.workspaceId, wsId(req))).orderBy(asc(mailboxes.email));
+    // The mailboxes and the domains are fetched at the same time (each database round trip takes a moment).
+    const [list, domainRows] = await Promise.all([
+      db.select().from(mailboxes).where(eq(mailboxes.workspaceId, wsId(req))).orderBy(asc(mailboxes.email)),
+      db.select().from(domains).where(eq(domains.workspaceId, wsId(req))),
+    ]);
     const stats = await mailboxStats(list);
-    const domainRows = await db.select().from(domains).where(eq(domains.workspaceId, wsId(req)));
     return list.map((m) => ({ ...publicMailbox(m, stats.get(m.id)!), domain: domainRows.find((d) => d.id === m.domainId) ?? null }));
   });
 

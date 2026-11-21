@@ -1,20 +1,23 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { BarChart3, Download } from "lucide-react";
 import { useState } from "react";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api } from "../api";
 import { useWs } from "../App";
+import { DateRangePicker, fromDay } from "../DateRangePicker";
 import { cx, PageHeader, pct, Spinner, Stat } from "../ui";
 
 interface AnalyticsData {
   totals: { sent: number; contacted: number; opened: number; clicked: number; replied: number; bounced: number; opted_out: number };
   funnel: { added: number; positive: number; meetings: number; closed: number };
   daily: { day: string; sent: number; replied: number; opened: number; bounced: number }[];
-  senders: { id: string; email: string; from_name: string; sent: number; contacted: number; opened: number; replied: number; bounced: number; opted_out: number }[];
+  senders: { id: string; email: string; from_name: string; sent: number; contacted: number; opened: number; replied: number; positive: number; bounced: number; opted_out: number }[];
   variants: { position: number; step_name: string; label: string; subject: string; sent: number; opened: number }[];
 }
 
-const RANGES = [{ k: "7", label: "Week" }, { k: "30", label: "Month" }, { k: "90", label: "Quarter" }, { k: "3650", label: "All time" }];
+const RANGES = [{ k: "today", label: "Today" }, { k: "7", label: "Week" }, { k: "30", label: "Month" }, { k: "90", label: "Quarter" }, { k: "3650", label: "All time" }, { k: "custom", label: "Custom dates" }];
+
+const parseDay = fromDay;
 
 export function AnalyticsPage() {
   return (
@@ -27,7 +30,8 @@ export function AnalyticsPage() {
 
 export function useAnalytics(ws: string, from: string, to: string | undefined, sequenceId?: string) {
   const qs = `from=${from}${to ? `&to=${to}` : ""}${sequenceId ? `&sequenceId=${sequenceId}` : ""}`;
-  return { qs, query: useQuery({ queryKey: ["analytics", ws, qs], queryFn: () => api<AnalyticsData>(`/v1/workspaces/${ws}/analytics?${qs}`) }) };
+  // The previous figures stay on screen while new dates load, so changing the range never blanks the page.
+  return { qs, query: useQuery({ queryKey: ["analytics", ws, qs], queryFn: () => api<AnalyticsData>(`/v1/workspaces/${ws}/analytics?${qs}`), placeholderData: keepPreviousData }) };
 }
 
 // With `range` the parent controls the dates (sequence overview); otherwise the view shows its own range buttons.
@@ -35,10 +39,23 @@ export function AnalyticsView({ sequenceId, range: fixed }: { sequenceId?: strin
   const ws = useWs();
   const [range, setRange] = useState("30");
   const [series, setSeries] = useState({ sent: true, replied: true, opened: false });
+  // "Custom dates": two calendar boxes. A blank From means the last 30 days before To; a blank To means up to now.
+  const [cFrom, setCFrom] = useState("");
+  const [cTo, setCTo] = useState("");
   const dayStart = new Date();
   dayStart.setHours(0, 0, 0, 0);
-  const from = fixed?.from ?? new Date(dayStart.getTime() - Number(range) * 86400000).toISOString();
-  const { qs, query: data } = useAnalytics(ws, from, fixed?.to, sequenceId);
+  const cf = parseDay(cFrom), ct = parseDay(cTo);
+  const endOf = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
+  // The dates are worked out from whole days, never from "right now" to the millisecond: a value that changes on every draw makes the
+  // page ask the server again and again (an endless "loading").
+  const backwards = range === "custom" && !!cf && !!ct && cf.getTime() > ct.getTime();
+  const [lo, hi] = backwards && cf && ct ? [ct, cf] : [cf, ct];
+  const to = fixed?.to ?? (range === "today" ? endOf(dayStart).toISOString() : range === "custom" && hi ? endOf(hi).toISOString() : undefined);
+  const from = fixed?.from
+    ?? (range === "today" ? dayStart.toISOString()
+      : range === "custom" ? (lo ? lo.toISOString() : new Date((hi ? endOf(hi) : dayStart).getTime() - 30 * 86400000).toISOString())
+        : new Date(dayStart.getTime() - Number(range) * 86400000).toISOString());
+  const { qs, query: data } = useAnalytics(ws, from, to, sequenceId);
 
   if (data.isLoading || !data.data) return <Spinner />;
   const { totals: t, funnel: f, daily, senders } = data.data;
@@ -57,6 +74,11 @@ export function AnalyticsView({ sequenceId, range: fixed }: { sequenceId?: strin
         {RANGES.map((r) => (
           <button key={r.k} className={cx("btn-sm btn", range === r.k ? "bg-ink-900 text-ink-50" : "bg-surface border border-ink-200 text-ink-600")} onClick={() => setRange(r.k)}>{r.label}</button>
         ))}
+        {range === "custom" && (
+          <div className="flex flex-wrap items-center gap-2">
+            <DateRangePicker from={cFrom} to={cTo} onChange={(f, t) => { setCFrom(f); setCTo(t); }} onReset={() => { setCFrom(""); setCTo(""); setRange("30"); }} />
+          </div>
+        )}
         <a className="btn-secondary btn-sm ml-auto" href={`/v1/workspaces/${ws}/reports/messages.csv?${qs}`}><Download size={14} /> Export messages CSV</a>
       </div>
 
@@ -116,17 +138,18 @@ export function AnalyticsView({ sequenceId, range: fixed }: { sequenceId?: strin
         <h2 className="text-sm font-semibold text-ink-900 mb-3">Senders</h2>
         <div className="card overflow-x-auto">
           <table className="w-full">
-            <thead><tr><th className="th">Mailbox</th><th className="th text-right">Contacted</th><th className="th text-right">Sent</th><th className="th text-right">Opened</th><th className="th text-right">Replied</th><th className="th text-right">Bounced</th><th className="th text-right">Opt-outs</th></tr></thead>
+            <thead><tr><th className="th">Mailbox</th><th className="th text-right">Contacted</th><th className="th text-right">Sent</th><th className="th text-right">Opened</th><th className="th text-right">Replied</th><th className="th text-right">Positive</th><th className="th text-right">Bounced</th><th className="th text-right">Opt-outs</th></tr></thead>
             <tbody>
               {senders.map((s) => (
                 <tr key={s.id}>
                   <td className="td"><div className="font-medium text-ink-800">{s.from_name}</div><div className="text-xs text-ink-500">{s.email}</div></td>
                   <td className="td text-right">{s.contacted}</td><td className="td text-right">{s.sent}</td><td className="td text-right">{s.opened}</td>
                   <td className="td text-right">{s.replied} <span className="text-ink-400 text-xs">{rate(s.replied, s.contacted)}</span></td>
+                  <td className="td text-right">{s.positive} <span className="text-ink-400 text-xs">{rate(s.positive, s.replied)}</span></td>
                   <td className="td text-right">{s.bounced}</td><td className="td text-right">{s.opted_out}</td>
                 </tr>
               ))}
-              {!senders.length && <tr><td className="td text-center text-ink-400" colSpan={7}>No mailboxes connected yet</td></tr>}
+              {!senders.length && <tr><td className="td text-center text-ink-400" colSpan={8}>No mailboxes connected yet</td></tr>}
             </tbody>
           </table>
         </div>

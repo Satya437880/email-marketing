@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { AlarmClock, ChevronRight, Mail, Send, SlidersHorizontal, Users, X } from "lucide-react";
+import { AlarmClock, ChevronRight, Mail, RotateCcw, Send, SlidersHorizontal, Users } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type Mailbox, type SenderProfile, type SequenceRow } from "../api";
 import { cx } from "../ui";
@@ -90,7 +90,8 @@ export function FiltersButton({ ws, value, onChange }: { ws: string; value: Inbo
         <SlidersHorizontal size={15} /> Filters{count > 0 && <span className="chip bg-brand-600 text-white ml-0.5">{count}</span>}
       </button>
       {open && (
-        <div className="absolute left-0 top-10 z-30 w-[min(560px,calc(100vw-32px))] card flex flex-col sm:flex-row overflow-hidden">
+        <div className="absolute left-0 top-10 z-30 w-[min(560px,calc(100vw-32px))] card overflow-hidden">
+         <div className="flex flex-col sm:flex-row">
           <div className="sm:w-48 border-b sm:border-b-0 sm:border-r border-ink-100 p-1.5 flex sm:flex-col overflow-x-auto">
             {cats.map((c) => (
               <button key={c.k} onClick={() => setCat(c.k)}
@@ -100,11 +101,6 @@ export function FiltersButton({ ws, value, onChange }: { ws: string; value: Inbo
                 <ChevronRight size={14} className="hidden sm:block text-ink-400" />
               </button>
             ))}
-            {count > 0 && (
-              <button className="sm:mt-auto flex items-center gap-1.5 rounded-md px-2.5 h-9 text-sm text-red-600 hover:bg-red-50 whitespace-nowrap" onClick={() => onChange(EMPTY_FILTERS)}>
-                <X size={14} /> Clear all
-              </button>
-            )}
           </div>
           <div className="flex-1 p-3 min-h-[260px] flex flex-col">
             {cat === "reminder" ? (
@@ -142,6 +138,11 @@ export function FiltersButton({ ws, value, onChange }: { ws: string; value: Inbo
               </>
             )}
           </div>
+         </div>
+         <div className="flex items-center justify-between gap-3 px-4 py-3 border-t border-ink-100 bg-ink-50/50">
+           <button className="btn-secondary btn-sm" disabled={count === 0} onClick={() => { onChange(EMPTY_FILTERS); setQ(""); }}><RotateCcw size={14} /> Reset filters</button>
+           <span className="text-xs text-ink-500">{count ? `${count} filter${count === 1 ? "" : "s"} on` : "No filters on"}</span>
+         </div>
         </div>
       )}
     </div>

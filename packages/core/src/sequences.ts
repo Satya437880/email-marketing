@@ -1,6 +1,6 @@
 import { db, sequenceContacts, sequences, sequenceSteps } from "@outreach/db";
-import { alignToWindow, nextEmailStep, recalculateDue, type SendSchedule } from "@outreach/engine";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { alignToWindow, nextEmailStep, nextUnsentEmailStep, recalculateDue, type SendSchedule } from "@outreach/engine";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 
 async function firstEmailIndex(sequenceId: string) {
   const steps = await db.select().from(sequenceSteps).where(eq(sequenceSteps.sequenceId, sequenceId)).orderBy(asc(sequenceSteps.position));
@@ -28,6 +28,8 @@ export async function addContactsToSequence(workspaceId: string, sequenceId: str
     added += rows.length;
   }
   if (added && seq.status === "completed") await db.update(sequences).set({ status: "active" }).where(eq(sequences.id, sequenceId));
+  // Emails added to the sequence since its contacts finished are sent to them too.
+  if (live) await continueFinishedContacts(sequenceId);
   return added;
 }
 
@@ -80,25 +82,106 @@ export async function retimeWaitingEmails(sequenceId: string, now = new Date()):
   return changed;
 }
 
+// New emails were added to a running (or finished) sequence: contacts who had already finished it carry on with the new emails,
+// timed from their last email using the waits before the new steps, and placed in the next open sending window.
+// Contacts who replied, bounced, opted out or were stopped on purpose (a company reply, a cancelled email) stay stopped, and an email a
+// contact already received is never sent again.
+export async function continueFinishedContacts(sequenceId: string, now = new Date()): Promise<number> {
+  const seq = await db.query.sequences.findFirst({ where: eq(sequences.id, sequenceId) });
+  if (!seq || (seq.status !== "active" && seq.status !== "completed")) return 0;
+  const steps = (await db.select().from(sequenceSteps).where(eq(sequenceSteps.sequenceId, sequenceId)).orderBy(asc(sequenceSteps.position)))
+    .map((s) => ({ id: s.id, type: s.type, delayDays: s.delayDays, delayMinutes: s.delayMinutes }));
+  if (!steps.some((s) => s.type === "email")) return 0;
+  const rows = await db.execute<{ id: string; current_step: number; base: Date; sent: string[] | null }>(sql`
+    select sc.id, sc.current_step,
+           coalesce((select max(m.sent_at) from messages m where m.sequence_id = sc.sequence_id and m.contact_id = sc.contact_id and m.direction = 'out'), sc.created_at) as base,
+           (select array_agg(distinct m.step_id::text) from messages m where m.sequence_id = sc.sequence_id and m.contact_id = sc.contact_id and m.direction = 'out' and m.step_id is not null) as sent
+    from sequence_contacts sc
+    where sc.sequence_id = ${sequenceId} and sc.state = 'finished' and sc.last_error is null
+  `) as unknown as { id: string; current_step: number; base: Date; sent: string[] | null }[];
+  let resumed = 0;
+  for (const r of rows) {
+    // A contact who never received any email from this sequence starts at its first email, not partway through.
+    const next = nextUnsentEmailStep(steps, (r.sent ?? []).length ? r.current_step : -1, new Set(r.sent ?? []), new Date(r.base));
+    if (!next) continue;
+    const at = alignToWindow(new Date(Math.max(next.dueAt.getTime(), now.getTime())), seq.settings.schedule);
+    const done = await db.update(sequenceContacts).set({ state: "active", nextStep: next.index, dueAt: next.dueAt, nextRunAt: at, lastError: null })
+      .where(and(eq(sequenceContacts.id, r.id), eq(sequenceContacts.state, "finished"), isNull(sequenceContacts.lastError))).returning({ id: sequenceContacts.id });
+    resumed += done.length;
+  }
+  if (resumed && seq.status === "completed") await db.update(sequences).set({ status: "active" }).where(eq(sequences.id, sequenceId));
+  return resumed;
+}
+
+// The standing check that keeps every running sequence up to date by itself, so nobody has to say "I added contacts" or "I added an email":
+//  1. contacts waiting in a running sequence are scheduled;
+//  2. contacts who finished earlier carry on with emails added since;
+//  3. a sequence marked completed that has work to do is active again.
+// It runs on every planner tick, when the sequence screens are loaded, and when a sequence is switched on. It is cheap when nothing changed.
+let lastSync = 0;
+export async function syncLiveSequences(opts: { now?: Date; force?: boolean } = {}): Promise<{ scheduled: number; resumed: number; reactivated: number }> {
+  const now = opts.now ?? new Date();
+  if (!opts.force && Date.now() - lastSync < 10_000) return { scheduled: 0, resumed: 0, reactivated: 0 };
+  lastSync = Date.now();
+  let scheduled = 0;
+  let resumed = 0;
+
+  const waiting = await db.execute<{ id: string }>(sql`
+    select distinct sc.sequence_id as id from sequence_contacts sc join sequences s on s.id = sc.sequence_id
+    where sc.state = 'queued' and s.status in ('active', 'completed')
+  `) as unknown as { id: string }[];
+  for (const w of waiting) {
+    const seq = await db.query.sequences.findFirst({ where: eq(sequences.id, w.id) });
+    const { first } = await firstEmailIndex(w.id);
+    if (!seq || !first) continue;
+    const done = await db.update(sequenceContacts).set({ state: "active", nextStep: first.index, nextRunAt: alignToWindow(first.dueAt, seq.settings.schedule), dueAt: first.dueAt })
+      .where(and(eq(sequenceContacts.sequenceId, w.id), eq(sequenceContacts.state, "queued"))).returning({ id: sequenceContacts.id });
+    scheduled += done.length;
+  }
+
+  const candidates = await db.execute<{ id: string }>(sql`
+    select distinct s.id from sequences s
+    join sequence_contacts sc on sc.sequence_id = s.id and sc.state = 'finished' and sc.last_error is null
+    where s.status in ('active', 'completed')
+      and exists (select 1 from sequence_steps st where st.sequence_id = s.id and st.type = 'email' and st.position > sc.current_step)
+  `) as unknown as { id: string }[];
+  for (const c of candidates) resumed += await continueFinishedContacts(c.id, now);
+
+  const re = await db.execute<{ id: string }>(sql`
+    update sequences set status = 'active'
+    where status = 'completed' and exists (select 1 from sequence_contacts sc where sc.sequence_id = sequences.id and sc.state in ('queued', 'active', 'sending', 'ooo'))
+    returning id
+  `) as unknown as { id: string }[];
+  return { scheduled, resumed, reactivated: re.length };
+}
+
 export class LaunchError extends Error {}
 
 export async function launchSequence(workspaceId: string, sequenceId: string): Promise<void> {
   const seq = await db.query.sequences.findFirst({ where: and(eq(sequences.id, sequenceId), eq(sequences.workspaceId, workspaceId)) });
   if (!seq) throw new LaunchError("Sequence not found");
+  // Everything that is missing is reported together, so one pop-up says what to add.
   const { first } = await firstEmailIndex(sequenceId);
-  if (!first) throw new LaunchError("Add at least one email step before launching");
   const [{ senders } = { senders: 0 }] = await db.execute<{ senders: number }>(sql`
     select count(*)::int as senders from sequence_senders ss
     join sender_profile_mailboxes spm on spm.sender_profile_id = ss.sender_profile_id
     where ss.sequence_id = ${sequenceId}
   `) as unknown as { senders: number }[];
-  if (!senders) throw new LaunchError("Attach a rotation or mailboxes to this sequence before launching");
+  const [{ people } = { people: 0 }] = await db.execute<{ people: number }>(sql`
+    select count(*)::int as people from sequence_contacts where sequence_id = ${sequenceId}
+  `) as unknown as { people: number }[];
   const emptyVariant = await db.execute<{ n: number }>(sql`
     select count(*)::int as n from sequence_steps st
     where st.sequence_id = ${sequenceId} and st.type = 'email'
       and not exists (select 1 from step_variants v where v.step_id = st.id and length(trim(v.body_html)) > 0)
   `) as unknown as { n: number }[];
-  if ((emptyVariant[0]?.n ?? 0) > 0) throw new LaunchError("Every email step needs a variant with a body");
+  const missing: string[] = [];
+  if (!first) missing.push("Email drafts not found: add at least one email step");
+  else if ((emptyVariant[0]?.n ?? 0) > 0) missing.push("Email drafts are empty: every email step needs a draft with some text");
+  if (!people) missing.push("Contacts not found: add contacts to this sequence");
+  if (!senders) missing.push("Mailbox not found: attach a mailbox or rotation to this sequence");
+  if (missing.length) throw new LaunchError(`Can't activate this sequence yet. ${missing.join(". ")}.`);
+  if (!first) throw new LaunchError("Email drafts not found");
 
   await db.transaction(async (tx) => {
     await tx.update(sequences).set({ status: "active", launchedAt: seq.launchedAt ?? new Date() }).where(eq(sequences.id, sequenceId));

@@ -253,7 +253,8 @@ export interface SequenceSettings {
   oooBufferDays: number;
   plainText: boolean;
   espMatching: boolean;
-  optOut: { enabled: boolean; text: string };
+  // replyOnly: a plain "just reply unsubscribe" line, no link and no Unsubscribe button in the recipient's mail app.
+  optOut: { enabled: boolean; text: string; replyOnly?: boolean };
   trackOpens: boolean;
   trackClicks: boolean;
   cc: string[];
@@ -270,14 +271,14 @@ export interface SequenceSettings {
 export const DEFAULT_SEQUENCE_SETTINGS: SequenceSettings = {
   schedule: { timezone: "UTC", days: [1, 2, 3, 4, 5], start: "08:00", end: "18:00" },
   inSequencePriority: "followups_first",
-  stopOnCompanyReply: true,
+  stopOnCompanyReply: false,
   sequentialWithinCompany: false,
   companyLimit: null,
   oooAutoResume: true,
   oooBufferDays: 2,
   plainText: false,
   espMatching: true,
-  optOut: { enabled: true, text: "If you'd rather not hear from me, let me know" },
+  optOut: { enabled: true, text: "If you'd rather not hear from me, let me know", replyOnly: true },
   trackOpens: false,
   trackClicks: false,
   cc: [],

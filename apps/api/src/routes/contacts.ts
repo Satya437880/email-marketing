@@ -106,7 +106,65 @@ function normaliseRow(raw: Record<string, string>, mapping: Record<string, strin
   return out;
 }
 
-function contactFilters(workspaceId: string, q: { q?: string; tagId?: string; sequenceId?: string; esp?: string; validation?: string }) {
+// The Filters panel on the Contacts page. Each filter is "include" (only these) or "exclude" (not these).
+const filterMode = z.enum(["include", "exclude"]);
+const listFilter = z.object({ mode: filterMode, values: z.array(z.string().max(300)).max(300) });
+const panelFilters = z.object({
+  lastContacted: z.object({ mode: filterMode, days: z.number().int().min(0).max(36500) }).optional(),
+  tag: listFilter.optional(),
+  esp: listFilter.optional(),
+  validation: listFilter.optional(),
+  sequence: listFilter.optional(),
+  company: listFilter.optional(),
+  customVar: z.object({ mode: filterMode, name: z.string().max(100), op: z.enum(["contains", "equals", "starts", "empty", "not_empty"]), value: z.string().max(300).optional() }).optional(),
+  excludeContacted: z.boolean().optional(),
+});
+type PanelFilters = z.infer<typeof panelFilters>;
+
+function parsePanelFilters(raw?: string): PanelFilters {
+  if (!raw) return {};
+  try {
+    const r = panelFilters.safeParse(JSON.parse(raw));
+    if (r.success) return r.data;
+  } catch { /* fall through */ }
+  throw new HttpError(400, "bad_filters", "The filters could not be read");
+}
+
+const uuidList = (values: string[]) => values.filter((v) => /^[0-9a-f-]{36}$/i.test(v));
+const likeEscape = (v: string) => v.replace(/[\\%_]/g, (c) => `\\${c}`);
+
+function panelConditions(f: PanelFilters): SQL[] {
+  const out: SQL[] = [];
+  const maybeNot = (mode: "include" | "exclude", cond: SQL) => (mode === "exclude" ? sql`not (${cond})` : cond);
+  if (f.lastContacted) out.push(maybeNot(f.lastContacted.mode, sql`(${contacts.lastContactedAt} is not null and ${contacts.lastContactedAt} <= now() - (${f.lastContacted.days} * interval '1 day'))`));
+  if (f.tag?.values.length) {
+    const ids = uuidList(f.tag.values);
+    out.push(maybeNot(f.tag.mode, ids.length ? sql`exists (select 1 from ${contactTags} ct where ct.contact_id = ${contacts.id} and ct.tag_id in (${sql.join(ids.map((i) => sql`${i}::uuid`), sql`, `)}))` : sql`false`));
+  }
+  if (f.sequence?.values.length) {
+    const ids = uuidList(f.sequence.values);
+    out.push(maybeNot(f.sequence.mode, ids.length ? sql`exists (select 1 from ${sequenceContacts} sc where sc.contact_id = ${contacts.id} and sc.sequence_id in (${sql.join(ids.map((i) => sql`${i}::uuid`), sql`, `)}))` : sql`false`));
+  }
+  if (f.esp?.values.length) out.push(maybeNot(f.esp.mode, inArray(contacts.esp, f.esp.values)));
+  if (f.validation?.values.length) out.push(maybeNot(f.validation.mode, inArray(contacts.validationStatus, f.validation.values)));
+  if (f.company?.values.length) out.push(maybeNot(f.company.mode, sql`lower(${contacts.companyName}) in (${sql.join(f.company.values.map((v) => sql`${v.toLowerCase()}`), sql`, `)})`));
+  if (f.customVar?.name.trim()) {
+    const key = f.customVar.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+    const val = f.customVar.value?.trim() ?? "";
+    const col = sql`(${contacts.variables} ->> ${key})`;
+    const op = f.customVar.op;
+    if (op === "empty") out.push(maybeNot(f.customVar.mode, sql`coalesce(${col}, '') = ''`));
+    else if (op === "not_empty") out.push(maybeNot(f.customVar.mode, sql`coalesce(${col}, '') <> ''`));
+    else if (val) {
+      const cond = op === "equals" ? sql`lower(${col}) = ${val.toLowerCase()}` : op === "starts" ? sql`${col} ilike ${`${likeEscape(val)}%`}` : sql`${col} ilike ${`%${likeEscape(val)}%`}`;
+      out.push(maybeNot(f.customVar.mode, cond));
+    }
+  }
+  if (f.excludeContacted) out.push(sql`${contacts.lastContactedAt} is null`);
+  return out;
+}
+
+function contactFilters(workspaceId: string, q: { q?: string; tagId?: string; sequenceId?: string; esp?: string; validation?: string; filters?: string }) {
   const parts: (SQL | undefined)[] = [eq(contacts.workspaceId, workspaceId)];
   if (q.q) {
     const like = `%${q.q}%`;
@@ -116,6 +174,7 @@ function contactFilters(workspaceId: string, q: { q?: string; tagId?: string; se
   if (q.sequenceId) parts.push(sql`exists (select 1 from ${sequenceContacts} sc where sc.contact_id = ${contacts.id} and sc.sequence_id = ${q.sequenceId})`);
   if (q.esp) parts.push(eq(contacts.esp, q.esp));
   if (q.validation) parts.push(eq(contacts.validationStatus, q.validation));
+  parts.push(...panelConditions(parsePanelFilters(q.filters)));
   return and(...parts);
 }
 
@@ -125,11 +184,30 @@ const listQuery = z.object({
   sequenceId: z.string().uuid().optional(),
   esp: z.string().optional(),
   validation: z.string().optional(),
+  filters: z.string().max(20000).optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
 });
 
 export async function contactRoutes(app: FastifyInstance) {
+  // Choices for the Filters panel: company names, and the names of the custom variables contacts have.
+  app.get("/v1/workspaces/:ws/contacts/filter-options", async (req) => {
+    const q = query(req, z.object({ kind: z.enum(["company", "variable"]), q: z.string().trim().max(100).optional() }));
+    const workspaceId = wsId(req);
+    if (q.kind === "company") {
+      const like = `%${likeEscape(q.q ?? "")}%`;
+      const rows = await db.execute<{ name: string; n: number }>(sql`
+        select company_name as name, count(*)::int as n from contacts
+        where workspace_id = ${workspaceId} and company_name <> '' and company_name ilike ${like}
+        group by company_name order by n desc, company_name limit 50`) as unknown as { name: string; n: number }[];
+      return rows;
+    }
+    const rows = await db.execute<{ name: string; n: number }>(sql`
+      select k as name, count(*)::int as n from contacts c, jsonb_object_keys(c.variables) k
+      where c.workspace_id = ${workspaceId} group by k order by n desc, k limit 100`) as unknown as { name: string; n: number }[];
+    return rows;
+  });
+
   app.get("/v1/workspaces/:ws/contacts", async (req) => {
     const q = query(req, listQuery);
     const where = contactFilters(wsId(req), q);
@@ -175,6 +253,17 @@ export async function contactRoutes(app: FastifyInstance) {
       if (rows.length) await db.insert(contactTags).values(rows.map((t) => ({ contactId, tagId: t.id }))).onConflictDoNothing();
     }
     return db.query.contacts.findFirst({ where: eq(contacts.id, contactId) });
+  });
+
+  // One contact with its tags and the sequences it is in (for the details panel).
+  app.get("/v1/workspaces/:ws/contacts/:id", async (req) => {
+    const p = params(req, idParams);
+    const row = await db.query.contacts.findFirst({ where: and(eq(contacts.id, p.id), eq(contacts.workspaceId, wsId(req))) });
+    if (!row) notFound("Contact");
+    const tagRows = await db.select({ id: tags.id, name: tags.name }).from(contactTags).innerJoin(tags, eq(tags.id, contactTags.tagId)).where(eq(contactTags.contactId, row.id));
+    const seqRows = await db.select({ id: sequences.id, name: sequences.name, status: sequences.status, state: sequenceContacts.state })
+      .from(sequenceContacts).innerJoin(sequences, eq(sequences.id, sequenceContacts.sequenceId)).where(eq(sequenceContacts.contactId, row.id));
+    return { ...row, tags: tagRows, sequences: seqRows };
   });
 
   app.patch("/v1/workspaces/:ws/contacts/:id", async (req) => {

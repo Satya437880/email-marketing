@@ -22,6 +22,13 @@ declare module "fastify" {
   }
 }
 
+// Every request used to cost two database round trips just to find out who is asking and which workspace it is for.
+// The answers are remembered for a short time. Logging out, and changes to a workspace or its members, clear them straight away.
+const AUTH_TTL_MS = 20_000;
+const sessionCache = new Map<string, { user: typeof users.$inferSelect; exp: number }>();
+const workspaceCache = new Map<string, { ws: typeof workspaces.$inferSelect; role: Role; exp: number }>();
+export function clearAuthCache(): void { sessionCache.clear(); workspaceCache.clear(); }
+
 export const hashPassword = (pw: string) => hash(pw, { memoryCost: 19456, timeCost: 2, parallelism: 1 });
 export const verifyPassword = (h: string, pw: string) => verify(h, pw).catch(() => false);
 
@@ -41,15 +48,18 @@ export async function createSession(reply: FastifyReply, userId: string): Promis
 export async function destroySession(req: FastifyRequest, reply: FastifyReply): Promise<void> {
   const id = req.cookies[SESSION_COOKIE];
   if (id) await db.delete(sessions).where(eq(sessions.id, id));
+  if (id) sessionCache.delete(id);
   reply.clearCookie(SESSION_COOKIE, { path: "/" });
 }
 
 export async function loadUser(req: FastifyRequest): Promise<void> {
   const id = req.cookies[SESSION_COOKIE];
   if (!id) return;
+  const hit = sessionCache.get(id);
+  if (hit && hit.exp > Date.now()) { req.user = hit.user; return; }
   const [row] = await db.select({ user: users }).from(sessions).innerJoin(users, eq(users.id, sessions.userId))
     .where(and(eq(sessions.id, id), gt(sessions.expiresAt, new Date())));
-  if (row) req.user = row.user;
+  if (row) { req.user = row.user; sessionCache.set(id, { user: row.user, exp: Date.now() + AUTH_TTL_MS }); } else sessionCache.delete(id);
 }
 
 export function requireUser(req: FastifyRequest) {
@@ -85,9 +95,16 @@ export async function loadWorkspace(req: FastifyRequest): Promise<void> {
     return;
   }
   const user = requireUser(req);
-  const [row] = await db.select({ ws: workspaces, role: memberships.role }).from(workspaces)
-    .innerJoin(memberships, and(eq(memberships.workspaceId, workspaces.id), eq(memberships.userId, user.id)))
-    .where(eq(workspaces.slug, slug));
+  const cacheKey = `${user.id}:${slug}`;
+  let row: { ws: typeof workspaces.$inferSelect; role: Role } | undefined;
+  const hit = workspaceCache.get(cacheKey);
+  if (hit && hit.exp > Date.now()) row = { ws: hit.ws, role: hit.role };
+  else {
+    [row] = await db.select({ ws: workspaces, role: memberships.role }).from(workspaces)
+      .innerJoin(memberships, and(eq(memberships.workspaceId, workspaces.id), eq(memberships.userId, user.id)))
+      .where(eq(workspaces.slug, slug));
+    if (row) workspaceCache.set(cacheKey, { ws: row.ws, role: row.role, exp: Date.now() + AUTH_TTL_MS });
+  }
   if (!row) throw new HttpError(404, "not_found", "Workspace not found");
   req.workspace = row.ws;
   req.role = row.role;
