@@ -9,8 +9,13 @@ Your data stays in Supabase.
 3. In the instance's network ("Security List" or "Network Security Group"), add ingress rules for **TCP 80** and **TCP 443** from `0.0.0.0/0`.
 4. Note the **public IP address**.
 
-## 2. A free address
-At duckdns.org create a name such as `yourname` and set its IP to the server's public IP. The address is `yourname.duckdns.org`.
+> **Tip: pick Oracle's Seoul region (ap-seoul-1) when you sign up** if your Supabase project is in Seoul (ap-northeast-2). Every database
+> question then takes a few milliseconds instead of about 200 ms, and the whole app feels much faster. The region cannot be changed later.
+
+## 2. An address for the API
+- **Own domain in Cloudflare (permanent, no extra cost):** add a DNS record `A  api  ->  PUBLIC-IP` and set it to **DNS only** (grey cloud), so
+  the free https certificate can be issued. The address is `api.yourdomain.com`.
+- **No domain:** at duckdns.org create `yourname` pointing to the public IP. The address is `yourname.duckdns.org`.
 
 ## 3. Put the project on the server
 ```
@@ -19,7 +24,7 @@ git clone https://github.com/Satya437880/email-marketing.git
 cd email-marketing
 cp deploy/server.env.example .env
 nano .env        # fill it in (next section)
-bash deploy/oracle-setup.sh yourname.duckdns.org
+bash deploy/oracle-setup.sh api.yourdomain.com      # or yourname.duckdns.org
 ```
 
 ## 4. What goes in `.env` on the server
@@ -34,7 +39,7 @@ And set these:
 - `SYSTEM_SMTP_URL` and `SYSTEM_MAIL_FROM` if people will sign up (otherwise sign-up is switched off in production)
 
 ## 5. Point Vercel at the server
-In `apps/web/vercel.json` change the three destinations from the tunnel address to `https://yourname.duckdns.org`, commit and push. Vercel redeploys.
+In `apps/web/vercel.json` change the three destinations from the tunnel address to your API address (`https://api.yourdomain.com` or `https://yourname.duckdns.org`), commit and push. Vercel redeploys.
 
 ## 6. Google and Microsoft sign-in (only if you use the Connect buttons)
 Use the Vercel address in the redirect links, for example `https://email-marketings.vercel.app/v1/oauth/google/callback`.

@@ -36,6 +36,30 @@ app.addHook("onRequest", async (req) => {
   await loadUser(req);
 });
 
+// Slows down password guessing and sign-up spam: login and sign-up attempts are counted per address and per email, per minute.
+const attempts = new Map<string, { n: number; reset: number }>();
+setInterval(() => { const now = Date.now(); for (const [k, v] of attempts) if (v.reset < now) attempts.delete(k); }, 60_000).unref();
+function tooMany(key: string, max: number): boolean {
+  const now = Date.now();
+  const cur = attempts.get(key);
+  if (!cur || cur.reset < now) { attempts.set(key, { n: 1, reset: now + 60_000 }); return false; }
+  cur.n += 1;
+  return cur.n > max;
+}
+app.addHook("preHandler", async (req) => {
+  if (req.method === "POST" && /^\/v1\/auth\/(login|signup)/.test(req.url)) {
+    const email = String((req.body as { email?: unknown } | null)?.email ?? "").trim().toLowerCase();
+    if (tooMany(`ip:${req.ip}`, 30) || (email && tooMany(`email:${email}`, 8))) {
+      throw new HttpError(429, "too_many_attempts", "Too many attempts. Wait a minute and try again.");
+    }
+  }
+});
+
+// A few standard safety headers on every answer.
+app.addHook("onSend", async (_req, reply) => {
+  reply.header("x-content-type-options", "nosniff").header("referrer-policy", "strict-origin-when-cross-origin");
+});
+
 app.addHook("preHandler", async (req) => {
   if (req.url.startsWith("/v1/workspaces/") && (req.params as { ws?: string }).ws) await loadWorkspace(req);
 });
