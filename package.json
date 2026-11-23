@@ -13,7 +13,8 @@
     "db:migrate": "npm run migrate -w @outreach/db",
     "dev:api": "npm run dev -w @outreach/api",
     "dev:workers": "npm run dev -w @outreach/workers",
-    "dev:web": "npm run dev -w @outreach/web"
+    "dev:web": "npm run dev -w @outreach/web",
+    "start:workers": "node worker.js"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
