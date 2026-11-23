@@ -47,7 +47,7 @@ function tooMany(key: string, max: number): boolean {
   return cur.n > max;
 }
 app.addHook("preHandler", async (req) => {
-  if (req.method === "POST" && /^\/v1\/auth\/(login|signup)/.test(req.url)) {
+  if (req.method === "POST" && /^\/v1\/auth\/(login|signup|forgot|reset|change-password)/.test(req.url)) {
     const email = String((req.body as { email?: unknown } | null)?.email ?? "").trim().toLowerCase();
     if (tooMany(`ip:${req.ip}`, 30) || (email && tooMany(`email:${email}`, 8))) {
       throw new HttpError(429, "too_many_attempts", "Too many attempts. Wait a minute and try again.");

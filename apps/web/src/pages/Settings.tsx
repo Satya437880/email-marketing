@@ -6,7 +6,7 @@ import { api, ApiError, type Paged } from "../api";
 import { useMe, useWs } from "../App";
 import { cx, Empty, fmtDate, Modal, PageHeader, Pager, PortalMenu, Spinner, Toggle, useToast } from "../ui";
 
-type TabKey = "usage" | "team" | "integrations" | "dnc" | "api" | "notifications";
+type TabKey = "usage" | "team" | "integrations" | "dnc" | "api" | "notifications" | "account";
 
 const TABS: { k: TabKey; label: string; help?: string }[] = [
   { k: "usage", label: "Usage", help: "Contacts, emails and mailboxes this workspace is using." },
@@ -15,6 +15,7 @@ const TABS: { k: TabKey; label: string; help?: string }[] = [
   { k: "dnc", label: "DNC list", help: "Emails and domains that are never contacted." },
   { k: "api", label: "API & MCP" },
   { k: "notifications", label: "Notifications" },
+  { k: "account", label: "My account", help: "Change your own password." },
 ];
 
 export function SettingsPage() {
@@ -38,6 +39,7 @@ export function SettingsPage() {
         {tab === "dnc" && <DncTab />}
         {tab === "api" && <ApiTab />}
         {tab === "notifications" && <NotificationsTab />}
+        {tab === "account" && <AccountTab />}
       </div>
     </div>
   );
@@ -666,6 +668,35 @@ function DncTab() {
         <textarea className="textarea min-h-[160px]" value={values} onChange={(e) => setValues(e.target.value)} placeholder={"jane@competitor.com\ncompetitor.com"} />
         <p className="text-xs text-ink-500 mt-1.5">A domain blocks everyone at that company. Active sequences skip these contacts from the next send.</p>
       </Modal>
+    </div>
+  );
+}
+
+// "My account": change your own password.
+function AccountTab() {
+  const toast = useToast();
+  const [f, setF] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
+  const [show, setShow] = useState(false);
+  const save = useMutation({
+    mutationFn: () => api("/v1/auth/change-password", { body: f }),
+    onSuccess: () => { toast("Password changed. Other devices were signed out."); setF({ currentPassword: "", newPassword: "", confirmPassword: "" }); },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+  const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF((x) => ({ ...x, [k]: e.target.value }));
+  const mismatch = !!f.confirmPassword && f.newPassword !== f.confirmPassword;
+  const ready = !!f.currentPassword && f.newPassword.length >= 8 && !mismatch && !!f.confirmPassword;
+  return (
+    <div className="max-w-md">
+      <h2 className="text-base font-semibold text-ink-900">Change password</h2>
+      <p className="text-sm text-ink-500 mt-1">Choose a new password for your own login. Other devices you are signed in on will be signed out.</p>
+      <form className="card p-5 mt-4 space-y-4" onSubmit={(e) => { e.preventDefault(); if (ready) save.mutate(); }}>
+        <div><label className="label">Current password</label><input className="input" type={show ? "text" : "password"} value={f.currentPassword} onChange={set("currentPassword")} autoComplete="current-password" /></div>
+        <div><label className="label">New password <span className="text-ink-400 font-normal">(at least 8 characters)</span></label><input className="input" type={show ? "text" : "password"} value={f.newPassword} onChange={set("newPassword")} autoComplete="new-password" /></div>
+        <div><label className="label">Confirm new password</label><input className="input" type={show ? "text" : "password"} value={f.confirmPassword} onChange={set("confirmPassword")} autoComplete="new-password" />{mismatch && <p className="text-xs text-red-600 mt-1">The two passwords do not match.</p>}</div>
+        <label className="flex items-center gap-2 text-sm text-ink-600"><input type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} /> Show passwords</label>
+        <button className="btn-primary w-full h-10" disabled={!ready || save.isPending}>{save.isPending ? "Saving…" : "Change password"}</button>
+        <p className="text-xs text-ink-500">Forgot your current password? Log out and use "Forgot password?" on the login page.</p>
+      </form>
     </div>
   );
 }

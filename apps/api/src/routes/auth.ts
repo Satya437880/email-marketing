@@ -1,12 +1,12 @@
 import { seedWorkspace } from "@outreach/core";
-import { db, memberships, organizations, pendingSignups, users, workspaces } from "@outreach/db";
+import { db, memberships, organizations, pendingSignups, sessions, users, workspaces } from "@outreach/db";
 import { sendSystemEmail, systemMailConfigured } from "@outreach/mail";
-import { eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
-import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { sendPlatformEmail } from "../accountMail";
-import { createSession, destroySession, hashPassword, requireUser, verifyPassword } from "../auth";
+import { clearAuthCache, createSession, destroySession, hashPassword, requireUser, SESSION_COOKIE, verifyPassword } from "../auth";
 import { body, HttpError } from "../http";
 
 export function slugify(name: string): string {
@@ -118,6 +118,82 @@ If you did not try to create an account, ignore this email.`,
     }
     await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
     await createSession(reply, user.id);
+    return { ok: true };
+  });
+
+  // ---- Forgotten password -------------------------------------------------------------------------------------------------------
+  // The reset link carries its own proof: the user, an expiry time and a signature made with SESSION_SECRET and the end of the current
+  // password hash. Once the password changes the hash changes, so a used link stops working. No extra table is needed.
+  const RESET_TTL_MS = 60 * 60 * 1000;
+  // An account that signs in with Google or Microsoft has no password yet; the same link lets its owner set one.
+  const resetSig = (userId: string, exp: number, passwordHash: string | null) =>
+    createHmac("sha256", process.env.SESSION_SECRET ?? "").update(`reset:${userId}:${exp}:${passwordHash ? passwordHash.slice(-24) : "no-password"}`).digest("base64url");
+  const badLink = () => new HttpError(400, "invalid_reset_link", "This reset link is not valid or has expired. Request a new one.");
+
+  // Always answers "ok", so nobody can use it to find out which emails have accounts.
+  app.post("/v1/auth/forgot", async (req) => {
+    const b = body(req, z.object({ email: z.string().trim().toLowerCase().email() }));
+    const user = await db.query.users.findFirst({ where: eq(users.email, b.email) });
+    if (user) {
+      const exp = Date.now() + RESET_TTL_MS;
+      const token = Buffer.from(`${user.id}.${exp}.${resetSig(user.id, exp, user.passwordHash)}`).toString("base64url");
+      const base = (process.env.PUBLIC_URL ?? process.env.WEB_ORIGIN ?? "http://localhost:5173").replace(/\/$/, "");
+      const link = `${base}/reset-password?token=${token}`;
+      const first = user.name.split(" ")[0] || "there";
+      const setting = !user.passwordHash;
+      const intro = setting
+        ? "You asked to set a password for your account (you have been signing in with Google or Microsoft). You can keep using that too."
+        : "We got a request to reset your password.";
+      const result = await sendPlatformEmail({
+        to: user.email,
+        subject: setting ? "Set a password for your account" : "Reset your password",
+        text: `Hi ${first},\n\n${intro} Open this link to choose a new password (it works for 1 hour and only once):\n\n${link}\n\nIf you didn't ask for this, you can ignore this email. Nothing changes unless you use the link.`,
+        html: `<p>Hi ${first},</p><p>${intro} Click the button to choose a new password. The link works for 1 hour and only once.</p><p><a href="${link}" style="display:inline-block;background:#6b2737;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none">Choose a new password</a></p><p>Or copy this address into your browser:<br>${link}</p><p>If you didn't ask for this, you can ignore this email. Nothing changes unless you use the link.</p>`,
+      });
+      if (result !== "sent") app.log.warn(`password reset email to ${user.email} was not sent (${result})`);
+      // Only when running locally and nothing could send the email: print the link so it can still be tested.
+      if (result === "none" && process.env.NODE_ENV !== "production") app.log.warn(`[dev] password reset link for ${user.email}: ${link}`);
+    }
+    return { ok: true };
+  });
+
+  app.post("/v1/auth/reset", async (req) => {
+    const b = body(req, z.object({
+      token: z.string().min(20).max(600),
+      password: z.string().min(8).max(200),
+      confirmPassword: z.string().max(200),
+    }).refine((v) => v.password === v.confirmPassword, { message: "The two passwords do not match", path: ["confirmPassword"] }));
+    const [id, expText, sig] = Buffer.from(b.token, "base64url").toString("utf8").split(".");
+    const exp = Number(expText);
+    if (!id || !sig || !Number.isFinite(exp) || exp < Date.now()) throw badLink();
+    const user = await db.query.users.findFirst({ where: eq(users.id, id) });
+    if (!user) throw badLink();
+    const real = Buffer.from(resetSig(user.id, exp, user.passwordHash));
+    const given = Buffer.from(sig);
+    if (given.length !== real.length || !timingSafeEqual(given, real)) throw badLink();
+    await db.update(users).set({ passwordHash: await hashPassword(b.password) }).where(eq(users.id, user.id));
+    // Everyone signed in with the old password is signed out.
+    await db.delete(sessions).where(eq(sessions.userId, user.id));
+    clearAuthCache();
+    return { ok: true };
+  });
+
+  // ---- Change password (signed in) ----------------------------------------------------------------------------------------------
+  app.post("/v1/auth/change-password", async (req) => {
+    const user = requireUser(req);
+    const b = body(req, z.object({
+      currentPassword: z.string().min(1).max(200),
+      newPassword: z.string().min(8).max(200),
+      confirmPassword: z.string().max(200),
+    }).refine((v) => v.newPassword === v.confirmPassword, { message: "The two new passwords do not match", path: ["confirmPassword"] }));
+    if (!user.passwordHash) throw new HttpError(400, "no_password", "This account signs in with Google or Microsoft and has no password yet. Log out and use \"Forgot password?\" on the login page to set one.");
+    if (!(await verifyPassword(user.passwordHash, b.currentPassword))) throw new HttpError(400, "wrong_password", "Your current password is not right");
+    if (b.newPassword === b.currentPassword) throw new HttpError(400, "same_password", "Choose a password you have not used just now");
+    await db.update(users).set({ passwordHash: await hashPassword(b.newPassword) }).where(eq(users.id, user.id));
+    // Other devices are signed out; this one stays signed in.
+    const current = req.cookies[SESSION_COOKIE];
+    await db.delete(sessions).where(current ? and(eq(sessions.userId, user.id), ne(sessions.id, current)) : eq(sessions.userId, user.id));
+    clearAuthCache();
     return { ok: true };
   });
 

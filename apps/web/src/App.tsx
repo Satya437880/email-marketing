@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Navigate, Route, Routes, useParams } from "react-router-dom";
 import { api, type Me } from "./api";
-import { AuthPage } from "./pages/Auth";
+import { AuthPage, ForgotPasswordPage, ResetPasswordPage } from "./pages/Auth";
 import { AnalyticsPage } from "./pages/Analytics";
 import { ContactsPage } from "./pages/Contacts";
 import { MailboxesPage } from "./pages/Mailboxes";
@@ -73,6 +73,8 @@ export function App() {
       <Route path="/" element={<Home />} />
       <Route path="/login" element={<AuthPage mode="login" />} />
       <Route path="/signup" element={<AuthPage mode="signup" />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/invite/:token" element={<InvitePage />} />
       <Route path="/:ws/*" element={<Protected />} />
     </Routes>

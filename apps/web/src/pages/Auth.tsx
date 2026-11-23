@@ -125,6 +125,7 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
                   {showPassword ? <EyeOff size={17} /> : <Eye size={17} />}
                 </button>
               </div>
+              {mode === "login" && <div className="mt-1.5 text-right"><Link className="text-sm text-brand-700 font-medium hover:underline" to="/forgot-password">Forgot password?</Link></div>}
             </div>
             {mode === "signup" && (
               <div>
@@ -155,5 +156,120 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
         </div>
       </div>
     </div>
+  );
+}
+
+// A password box with the same show/hide eye as the login page.
+function PasswordField({ id, label, value, onChange, autoComplete, autoFocus }: { id: string; label: string; value: string; onChange: (v: string) => void; autoComplete: string; autoFocus?: boolean }) {
+  const [show, setShow] = useState(false);
+  return (
+    <div>
+      <label className="label" htmlFor={id}>{label}</label>
+      <div className="relative">
+        <input id={id} className="input pr-11" type={show ? "text" : "password"} value={value} onChange={(e) => onChange(e.target.value)} required minLength={1} autoComplete={autoComplete} autoFocus={autoFocus} />
+        <button type="button" className="absolute right-1.5 top-1/2 -translate-y-1/2 grid place-items-center w-8 h-8 rounded-md text-ink-500 hover:bg-ink-100 hover:text-ink-800" aria-label={show ? "Hide password" : "Show password"} aria-pressed={show} onClick={() => setShow((v) => !v)}>
+          {show ? <EyeOff size={17} /> : <Eye size={17} />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AuthFrame({ title, text, children }: { title: string; text?: string; children: React.ReactNode }) {
+  return (
+    <div className="min-h-full flex">
+      <div className="flex flex-1 flex-col justify-center px-4 py-12 sm:px-12">
+        <div className="w-full max-w-sm mx-auto">
+          <Logo />
+          <h1 className="text-2xl font-semibold text-ink-900 mt-8">{title}</h1>
+          {text && <p className="text-sm text-ink-500 mt-1">{text}</p>}
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// "Forgot password?": asks for the email and sends a reset link. It always says the same thing, so it never reveals who has an account.
+export function ForgotPasswordPage() {
+  const [email, setEmail] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api("/v1/auth/forgot", { body: { email } });
+      setSent(true);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Something went wrong");
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (sent) {
+    return (
+      <AuthFrame title="Check your email" text={`If an account exists for ${email}, we sent a link to choose a new password. It works for 1 hour. Look in your spam folder too.`}>
+        <p className="text-sm text-ink-500 mt-6">Wrong address? <button className="text-brand-700 font-medium" onClick={() => setSent(false)}>Try again</button></p>
+        <p className="text-sm text-ink-500 mt-3"><Link className="text-brand-700 font-medium" to="/login">Back to log in</Link></p>
+      </AuthFrame>
+    );
+  }
+  return (
+    <AuthFrame title="Forgot your password?" text="Enter your email and we will send you a link to choose a new one.">
+      <form onSubmit={submit} className="mt-8 space-y-4">
+        <div><label className="label" htmlFor="forgot-email">Email</label><input id="forgot-email" className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus autoComplete="email" /></div>
+        {error && <div className="rounded-lg bg-red-50 text-red-700 text-sm px-3 py-2">{error}</div>}
+        <button className="btn-primary w-full h-10" disabled={busy || !email.trim()}>{busy ? "Sending…" : "Send reset link"}</button>
+      </form>
+      <p className="text-sm text-ink-500 mt-6 text-center"><Link className="text-brand-700 font-medium" to="/login">Back to log in</Link></p>
+    </AuthFrame>
+  );
+}
+
+// The page the reset link opens: choose a new password.
+export function ResetPasswordPage() {
+  const [params] = useSearchParams();
+  const token = params.get("token") ?? "";
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api("/v1/auth/reset", { body: { token, password, confirmPassword: confirm } });
+      setDone(true);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Something went wrong");
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (!token) {
+    return <AuthFrame title="This link is not complete" text="Open the link from the email exactly as it was sent, or ask for a new one."><p className="mt-6"><Link className="btn-primary" to="/forgot-password">Request a new link</Link></p></AuthFrame>;
+  }
+  if (done) {
+    return <AuthFrame title="Password changed" text="You can now log in with your new password. Any other device you were signed in on has been signed out."><p className="mt-6"><Link className="btn-primary w-full h-10" to="/login">Log in</Link></p></AuthFrame>;
+  }
+  return (
+    <AuthFrame title="Choose a new password" text="Use at least 8 characters.">
+      <form onSubmit={submit} className="mt-8 space-y-4">
+        <PasswordField id="reset-password" label="New password" value={password} onChange={setPassword} autoComplete="new-password" autoFocus />
+        <PasswordField id="reset-confirm" label="Confirm new password" value={confirm} onChange={setConfirm} autoComplete="new-password" />
+        {password && confirm && password !== confirm && <p className="text-xs text-red-600">The two passwords do not match.</p>}
+        {error && (
+          <div className="rounded-lg bg-red-50 text-red-700 text-sm px-3 py-2">
+            {error} {/not valid|expired/i.test(error) && <Link className="underline font-medium" to="/forgot-password">Request a new link</Link>}
+          </div>
+        )}
+        <button className="btn-primary w-full h-10" disabled={busy || password.length < 8 || password !== confirm}>{busy ? "Saving…" : "Save new password"}</button>
+      </form>
+    </AuthFrame>
   );
 }
