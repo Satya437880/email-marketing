@@ -1,8 +1,8 @@
 {
   "rewrites": [
-    { "source": "/v1/:path*", "destination": "https://extending-generated-advantages-europe.trycloudflare.com/v1/:path*" },
-    { "source": "/t/:path*", "destination": "https://extending-generated-advantages-europe.trycloudflare.com/t/:path*" },
-    { "source": "/u/:path*", "destination": "https://extending-generated-advantages-europe.trycloudflare.com/u/:path*" },
+    { "source": "/v1/:path*", "destination": "https://insider-focal-virtue-correction.trycloudflare.com/v1/:path*" },
+    { "source": "/t/:path*", "destination": "https://insider-focal-virtue-correction.trycloudflare.com/t/:path*" },
+    { "source": "/u/:path*", "destination": "https://insider-focal-virtue-correction.trycloudflare.com/u/:path*" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
