@@ -120,20 +120,22 @@ export function EmailsPage() {
   return (
     <div>
 
+      <div className="px-4 md:px-8 pt-6">
+  <div className="flex flex-wrap items-center gap-2.5 mb-4 rounded-xl border border-ink-200 bg-surface p-2 shadow-sm">
+    <div className="relative flex-1 min-w-[200px] max-w-md">
+      <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-400" />
+      <input className="input pl-9 !h-10 !border-transparent !bg-ink-50 focus:!bg-surface" placeholder="Search emails" aria-label="Search emails" value={typed} onChange={(e) => { setTyped(e.target.value); setPage(1); }} />
+    </div>
+    <button className="hidden lg:inline-flex btn-ghost !h-10 !px-3.5" onClick={flipFilters} aria-pressed={showFilters} title={showFilters ? "Hide the filter list to give the table more room" : "Show the filter list"}><SlidersHorizontal size={15} /> {showFilters ? "Hide filters" : "Show filters"}{!showFilters && active.length > 0 && <span className="chip bg-brand-600 text-white">{active.length}</span>}</button>
+    <span className="lg:hidden"><EmailFiltersButton ws={ws} value={filters} status={tab} onStatus={(t) => { setTab(t); setPage(1); setPicked(new Set()); setApplied(true); }} onChange={(f) => { setFilters(f); setPage(1); setPicked(new Set()); setApplied(true); }} /></span>
+    <span className="ml-auto pr-2 text-sm text-ink-500 tabular-nums" aria-live="polite">{applied && list.data ? `${list.data.total.toLocaleString()} email${list.data.total === 1 ? "" : "s"}` : ""}{list.isFetching && !list.isLoading ? " · updating…" : ""}</span>
+    <Link to={`/${ws}/emails/compose`} className="btn-primary !h-10 !px-4 shadow-sm"><Pencil size={16} /> Compose</Link>
+  </div>
+      </div>
+
       <div className="flex">
       {showFilters && <EmailFilterSidebar ws={ws} scheduledCount={list.data?.scheduled} value={filters} status={tab} applied={applied} onClear={reset} onApply={(f, st) => { setFilters(f); setTab(st); setPage(1); setPicked(new Set()); setApplied(true); }} />}
-      <div className="flex-1 min-w-0 px-4 md:px-8 pt-12 pb-4">
-        <div className="flex flex-wrap items-center gap-3 mb-3">
-          <div className="relative w-full max-w-sm">
-            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-400" />
-            <input className="input pl-9" placeholder="Search emails" aria-label="Search emails" value={typed} onChange={(e) => { setTyped(e.target.value); setPage(1); }} />
-          </div>
-          <button className="hidden lg:inline-flex btn-secondary" onClick={flipFilters} aria-pressed={showFilters} title={showFilters ? "Hide the filter list to give the table more room" : "Show the filter list"}><SlidersHorizontal size={15} /> {showFilters ? "Hide filters" : "Show filters"}{!showFilters && active.length > 0 && <span className="chip bg-brand-600 text-white">{active.length}</span>}</button>
-          <span className="lg:hidden"><EmailFiltersButton ws={ws} value={filters} status={tab} onStatus={(t) => { setTab(t); setPage(1); setPicked(new Set()); setApplied(true); }} onChange={(f) => { setFilters(f); setPage(1); setPicked(new Set()); setApplied(true); }} /></span>
-          <span className="ml-auto text-sm text-ink-500" aria-live="polite">{applied && list.data ? `${list.data.total.toLocaleString()} email${list.data.total === 1 ? "" : "s"}` : ""}{list.isFetching && !list.isLoading ? " · updating…" : ""}</span>
-          <Link to={`/${ws}/emails/compose`} className="btn-primary"><Pencil size={16} /> Compose</Link>
-        </div>
-
+      <div className="flex-1 min-w-0 px-4 md:px-8 pt-0 pb-4">
         {active.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 mb-3">
             {active.map((a) => (
@@ -163,9 +165,9 @@ export function EmailsPage() {
           </div>
         )}
 
-        <div className={cx("card overflow-x-auto transition-opacity", list.isFetching && !list.isLoading && "opacity-70")} aria-busy={list.isFetching}>
+        <div className={cx("card overflow-x-auto transition-opacity", list.isFetching && !list.isLoading && "opacity-70", !applied && "hidden")} aria-busy={list.isFetching}>
           {!applied ? (
-            <Empty icon={<SlidersHorizontal size={20} />} title="Choose your filters" text="Pick what you want to see in the filters on the left, then click Apply Filters. To see every email, click Apply Filters without choosing anything." action={!showFilters ? <button className="btn-primary" onClick={flipFilters}><SlidersHorizontal size={15} /> Show filters</button> : undefined} />
+            null
           ) : list.isLoading ? <div className="py-16 grid place-items-center"><Spinner /></div> : !items.length ? (
             active.length || search.trim()
               ? <Empty icon={<Search size={20} />} title="No emails match" text="Nothing fits the filters and search you have on. Try removing one, or clear them all." action={<button className="btn-secondary" onClick={() => { reset(); setTyped(""); }}>Clear filters and search</button>} />
@@ -216,7 +218,6 @@ export function EmailsPage() {
           )}
           {!!list.data?.total && <PagerBar page={page} pageSize={pageSize} total={list.data.total} onPage={setPage} sizes={[10, 25, 50, 100]} onPageSize={(n) => { setPageSize(n); setPage(1); try { localStorage.setItem("emails-page-size", String(n)); } catch { /* not saved */ } }} />}
         </div>
-        {tab !== "sent" && <p className="mt-3 text-xs text-ink-500 flex items-center gap-1.5"><Clock size={13} /> "Send now" moves an email to the front of the queue. It still follows your sending window and mailbox daily limits.</p>}
       </div>
       </div>
     </div>

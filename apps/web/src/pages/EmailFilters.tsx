@@ -234,8 +234,8 @@ export function EmailFilterSidebar({ ws, value, status, onApply, onClear, applie
   );
 
   return (
-    <aside className="hidden lg:flex flex-col w-64 shrink-0 border-r border-ink-200 bg-surface pt-8 sticky top-0 self-start max-h-[calc(100vh-6rem)]" aria-label="Email filters">
-      <div className="flex-1 overflow-y-auto px-3.5 pb-3">
+    <aside className="hidden lg:flex flex-col w-64 shrink-0 border-r border-ink-200 bg-surface pt-6 self-stretch" aria-label="Email filters">
+      <div className="flex-1 px-3.5 pb-3">
         {dropdown("status", <Mail size={16} className="text-ink-500" />, "Email Status", dStatus !== "all" ? 1 : 0, <>
           {row("radio", dStatus === "all", "All Emails", () => setDStatus("all"))}
           {row("radio", dStatus === "scheduled", "Scheduled", () => setDStatus("scheduled"), { note: scheduledCount ?? 0 })}
