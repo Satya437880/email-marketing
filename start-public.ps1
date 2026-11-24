@@ -66,10 +66,12 @@ $file = Join-Path $root "apps\web\vercel.json"
 $text = [IO.File]::ReadAllText($file)
 if ($text -notmatch [regex]::Escape($url)) {
   [IO.File]::WriteAllText($file, [regex]::Replace($text, "https://[a-z0-9-]+\.trycloudflare\.com", $url))
-  git add apps/web/vercel.json
-  git commit -q -m "Update the API tunnel address" -m "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
-  git push origin master 2>&1 | Out-Null
-  Say "vercel.json updated and pushed. Vercel needs about a minute to publish it."
+  # git writes progress to stderr, which PowerShell treats as an error, so run it through cmd and check the exit code instead.
+  cmd /c 'git add apps/web/vercel.json >nul 2>&1'
+  cmd /c 'git commit -q -m "Update the API tunnel address" -m "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>" >nul 2>&1'
+  cmd /c 'git push origin master >nul 2>&1'
+  if ($LASTEXITCODE -eq 0) { Say "vercel.json updated and pushed. Vercel needs about a minute to publish it." }
+  else { Say "WARNING: the push to GitHub failed, so Vercel will not see the new address. Run 'git push origin master' in this folder and check your internet and GitHub login." }
 } else { Say "vercel.json already points to this address." }
 
 Say "Done. Share this address: https://email-marketings.vercel.app"
