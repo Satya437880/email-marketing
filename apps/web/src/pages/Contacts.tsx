@@ -734,7 +734,16 @@ function TagList() {
     onSuccess: () => { setName(""); qc.invalidateQueries({ queryKey: ["tags", ws] }); },
     onError: (e: Error) => toast(e.message, "error"),
   });
-  const del = useMutation({ mutationFn: (id: string) => api(`/v1/workspaces/${ws}/tags/${id}`, { method: "DELETE" }), onSuccess: () => qc.invalidateQueries({ queryKey: ["tags", ws] }) });
+  const [deleting, setDeleting] = useState<Tag | null>(null);
+  const del = useMutation({
+    mutationFn: (v: { id: string; withContacts: boolean }) => api<{ deletedContacts: number }>(`/v1/workspaces/${ws}/tags/${v.id}${v.withContacts ? "?withContacts=true" : ""}`, { method: "DELETE" }),
+    onSuccess: (r, v) => {
+      setDeleting(null);
+      toast(v.withContacts ? `Tag and ${r.deletedContacts.toLocaleString()} contact${r.deletedContacts === 1 ? "" : "s"} deleted` : "Tag deleted. The contacts were kept.");
+      for (const key of ["tags", "contacts", "sequences", "sequence", "seq-contacts"]) qc.invalidateQueries({ queryKey: [key, ws] });
+    },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
   return (
     <div className="card overflow-hidden">
       <div className="flex gap-2 p-4 border-b border-ink-100">
@@ -751,12 +760,27 @@ function TagList() {
                   <td className="td font-medium"><span className="chip bg-brand-50 text-brand-700">{t.name}</span></td>
                   <td className="td">{t.contacts.toLocaleString()}</td>
                   <td className="td"><div className="flex flex-wrap gap-1">{t.sequences.map((s) => <span key={s.id} className="chip bg-ink-100 text-ink-600">{s.name} · {s.progress}%</span>)}{!t.sequences.length && <span className="text-ink-400 text-sm">—</span>}</div></td>
-                  <td className="td text-right"><button className="btn-ghost btn-sm" onClick={() => confirm(`Delete tag ${t.name}? Contacts are kept.`) && del.mutate(t.id)}><Trash2 size={14} /></button></td>
+                  <td className="td text-right"><button className="btn-ghost btn-sm" title="Delete this tag" aria-label={`Delete tag ${t.name}`} onClick={() => setDeleting(t)}><Trash2 size={14} /></button></td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      )}
+      {deleting && (
+        <Modal open onClose={() => setDeleting(null)} title={`Delete tag "${deleting.name}"`} icon={<Trash2 size={20} />}>
+          <div className="grid gap-3">
+            <button className="text-left rounded-lg border border-ink-200 p-3.5 hover:bg-ink-50 disabled:opacity-50" disabled={del.isPending} onClick={() => del.mutate({ id: deleting.id, withContacts: false })}>
+              <div className="font-semibold text-ink-900">Delete tag only</div>
+              <div className="text-sm text-ink-500">Removes the tag. The {deleting.contacts.toLocaleString()} contact{deleting.contacts === 1 ? "" : "s"} with this tag stay in your list.</div>
+            </button>
+            <button className="text-left rounded-lg border border-red-200 p-3.5 hover:bg-red-50 disabled:opacity-50" disabled={del.isPending}
+              onClick={() => confirm(`Permanently delete the tag "${deleting.name}" AND its ${deleting.contacts.toLocaleString()} contact${deleting.contacts === 1 ? "" : "s"}? This cannot be undone.`) && del.mutate({ id: deleting.id, withContacts: true })}>
+              <div className="font-semibold text-red-700">Delete tag with contacts</div>
+              <div className="text-sm text-ink-500">Removes the tag and permanently deletes the {deleting.contacts.toLocaleString()} contact{deleting.contacts === 1 ? "" : "s"} that have it. This cannot be undone.</div>
+            </button>
+          </div>
+        </Modal>
       )}
     </div>
   );

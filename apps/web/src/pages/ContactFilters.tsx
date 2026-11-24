@@ -76,7 +76,7 @@ export function ContactFiltersButton({ ws, value, onChange }: { ws: string; valu
   };
 
   const options: { id: string; label: string; note?: string }[] =
-    cat === "tag" ? (tags.data ?? []).map((t) => ({ id: t.id, label: t.name, note: `${t.contacts}` }))
+    cat === "tag" ? [{ id: "__untagged__", label: "Untagged contacts" }, ...(tags.data ?? []).map((t) => ({ id: t.id, label: t.name, note: `${t.contacts}` }))]
       : cat === "sequence" ? (sequences.data ?? []).map((s) => ({ id: s.id, label: s.name }))
         : cat === "esp" ? ESP_OPTIONS
           : cat === "validation" ? VALIDATION_OPTIONS

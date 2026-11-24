@@ -130,6 +130,7 @@ function parsePanelFilters(raw?: string): PanelFilters {
   throw new HttpError(400, "bad_filters", "The filters could not be read");
 }
 
+const UNTAGGED = "__untagged__";
 const uuidList = (values: string[]) => values.filter((v) => /^[0-9a-f-]{36}$/i.test(v));
 const likeEscape = (v: string) => v.replace(/[\\%_]/g, (c) => `\\${c}`);
 
@@ -139,7 +140,11 @@ function panelConditions(f: PanelFilters): SQL[] {
   if (f.lastContacted) out.push(maybeNot(f.lastContacted.mode, sql`(${contacts.lastContactedAt} is not null and ${contacts.lastContactedAt} <= now() - (${f.lastContacted.days} * interval '1 day'))`));
   if (f.tag?.values.length) {
     const ids = uuidList(f.tag.values);
-    out.push(maybeNot(f.tag.mode, ids.length ? sql`exists (select 1 from ${contactTags} ct where ct.contact_id = ${contacts.id} and ct.tag_id in (${sql.join(ids.map((i) => sql`${i}::uuid`), sql`, `)}))` : sql`false`));
+    // "__untagged__" is the pseudo tag for contacts that carry no tag at all (for example after their tag was deleted).
+    const wantsUntagged = f.tag.values.includes(UNTAGGED);
+    const tagged = ids.length ? sql`exists (select 1 from ${contactTags} ct where ct.contact_id = ${contacts.id} and ct.tag_id in (${sql.join(ids.map((i) => sql`${i}::uuid`), sql`, `)}))` : null;
+    const untagged = wantsUntagged ? sql`not exists (select 1 from ${contactTags} ct where ct.contact_id = ${contacts.id})` : null;
+    out.push(maybeNot(f.tag.mode, tagged && untagged ? sql`(${tagged} or ${untagged})` : tagged ?? untagged ?? sql`false`));
   }
   if (f.sequence?.values.length) {
     const ids = uuidList(f.sequence.values);
@@ -440,7 +445,20 @@ export async function contactRoutes(app: FastifyInstance) {
 
   app.delete("/v1/workspaces/:ws/tags/:id", async (req) => {
     const p = params(req, idParams);
-    await db.delete(tags).where(and(eq(tags.id, p.id), eq(tags.workspaceId, wsId(req))));
-    return { ok: true };
+    const q = query(req, z.object({ withContacts: z.enum(["true", "false"]).optional() }));
+    const workspaceId = wsId(req);
+    const tag = await db.query.tags.findFirst({ where: and(eq(tags.id, p.id), eq(tags.workspaceId, workspaceId)) });
+    if (!tag) notFound("Tag");
+    let deletedContacts = 0;
+    // "Delete tag with contacts": every contact that carries the tag is removed first, then the tag itself.
+    if (q.withContacts === "true") {
+      const ids = (await db.select({ id: contactTags.contactId }).from(contactTags).where(eq(contactTags.tagId, p.id))).map((r) => r.id);
+      for (let i = 0; i < ids.length; i += 1000) {
+        await db.delete(contacts).where(and(eq(contacts.workspaceId, workspaceId), inArray(contacts.id, ids.slice(i, i + 1000))));
+      }
+      deletedContacts = ids.length;
+    }
+    await db.delete(tags).where(and(eq(tags.id, p.id), eq(tags.workspaceId, workspaceId)));
+    return { ok: true, deletedContacts };
   });
 }
