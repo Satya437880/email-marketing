@@ -533,7 +533,7 @@ export function EmailEditor({ stepName, onStepName, subject, onSubject, bodyHtml
         </div>
       )}
       </div>
-      <PreviewPane ws={ws} subject={canReply && threadMode === "reply_new_subject" && subject.trim() && !/^re:/i.test(subject.trim()) ? `RE: ${subject.trim()}` : subject} bodyHtml={bodyHtml} replySubject={canReply && threadMode === "reply" ? (replySubject ?? "") : undefined} threaded={canReply && threadMode !== "new"} earlier={canReply && threadMode !== "new" ? earlier : undefined} />
+      <PreviewPane ws={ws} subject={canReply && threadMode === "reply_new_subject" && subject.trim() && !/^re:/i.test(subject.trim()) ? `RE: ${subject.trim()}` : subject} bodyHtml={bodyHtml} replySubject={canReply && threadMode === "reply" ? (replySubject ?? "") : undefined} threaded={canReply && threadMode !== "new"} earlier={canReply ? earlier : undefined} />
       {showSpam && (
         <aside className="relative min-w-0 p-4 border-t border-ink-100 xl:border-t-0" aria-label="Spam check">
           <button className="absolute right-2 top-2 text-ink-500 hover:text-ink-800" aria-label="Close spam check" onClick={() => setShowSpam(false)}><X size={16} /></button>
@@ -606,8 +606,9 @@ function PreviewPane({ ws, subject, bodyHtml, replySubject, earlier, threaded }:
         </div>
         <button className="btn-secondary h-9" onClick={() => setNonce((n) => n + 1)}><RefreshCw size={14} className={cx(loading && "animate-spin")} /> Refresh</button>
         {!!earlier?.length && (
-          <label className="flex items-center gap-2 h-9 px-3 rounded-xl border border-ink-200 bg-surface text-sm text-ink-700 cursor-pointer select-none">
-            <input type="checkbox" checked={showThread} onChange={(e) => setShowThread(e.target.checked)} /> Show email thread
+          <label className={cx("flex items-center gap-2 h-9 px-3 rounded-xl border border-ink-200 bg-surface text-sm select-none", threaded ? "text-ink-700 cursor-pointer" : "text-ink-400 cursor-not-allowed")}
+            title={threaded ? undefined : 'Set the Type to "Reply in same thread" to preview the thread'}>
+            <input type="checkbox" disabled={!threaded} checked={!!threaded && showThread} onChange={(e) => setShowThread(e.target.checked)} /> Show email thread
           </label>
         )}
         <div className="flex items-center rounded-xl border border-ink-200 bg-surface p-0.5">
