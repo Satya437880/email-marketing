@@ -1,0 +1,18 @@
+{
+  // Cloudflare Workers settings for the WEBSITE only (the API and the background workers can't run on Cloudflare Workers).
+  // Root directory in Cloudflare: apps/web   Build command: npm run build   Deploy command: npx wrangler deploy
+  "name": "outreachemailmarketingtool",
+  "main": "worker/index.js",
+  "compatibility_date": "2025-01-01",
+  "assets": {
+    "directory": "./dist",
+    // Pages that only exist in the browser (like /sequences) get the app's index.html.
+    "not_found_handling": "single-page-application",
+    // These paths go to the worker (and on to the API) instead of the static files.
+    "run_worker_first": ["/v1/*", "/t/*", "/u/*"]
+  },
+  // Public address of the API server. The free quick tunnel changes each time it restarts; use a permanent address when you have one.
+  "vars": { "API_ORIGIN": "https://REPLACE-WITH-YOUR-API-ADDRESS" },
+  // Keep a value you set in the Cloudflare dashboard instead of overwriting it on every deploy.
+  "keep_vars": true
+}
