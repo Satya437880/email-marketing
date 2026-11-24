@@ -79,7 +79,7 @@ export function buildQuoteHistory(messages: HistoryMessage[], opts: { timeZone?:
     const subject = reSubject(m.subject);
     const body = ownHtml(m);
     htmlBlocks.push(
-      `<hr data-quote style="border:0;border-top:1px solid #e1e1e1;margin:6px 0 6px 0">`
+      `<hr data-quote style="border:0;border-top:1px solid #e1e1e1;margin:2px 0 4px 0;height:0;line-height:0;font-size:0">`
       + `<div style="${FONT}"><b>From:</b> ${who.html}<br><b>Sent:</b> ${escapeHtml(sent)}`
       + (to ? `<br><b>To:</b> ${to.html}` : "")
       + (subject ? `<br><b>Subject:</b> ${escapeHtml(subject)}` : "")
