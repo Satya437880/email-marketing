@@ -1,6 +1,6 @@
 import { addContactsToSequence, contactVariables, continueFinishedContacts, syncLiveSequences, launchSequence, LaunchError, connectionFor, renderSignature, rescheduleWaitingEmails, retimeWaitingEmails } from "@outreach/core";
 import {
-  contacts, db, DEFAULT_SEQUENCE_SETTINGS, labels, mailboxes, products, senderProfileMailboxes, senderProfiles, sequenceContacts, sequences, sequenceSenders, sequenceSteps, stepVariants,
+  contacts, db, DEFAULT_SEQUENCE_SETTINGS, labels, mailboxes, messages, products, senderProfileMailboxes, senderProfiles, sequenceContacts, sequences, sequenceSenders, sequenceSteps, stepVariants,
   type SequenceSettings,
 } from "@outreach/db";
 import { buildQuoteHistory, composeEmail, type HistoryMessage, type Variables, render, sendSmtp, spamCheck } from "@outreach/mail";
@@ -404,8 +404,13 @@ export async function sequenceRoutes(app: FastifyInstance) {
   app.delete("/v1/workspaces/:ws/sequences/:id", async (req) => {
     const p = params(req, idParams);
     await owned(wsId(req), p.id);
-    await db.delete(senderProfiles).where(eq(senderProfiles.ownerSequenceId, p.id));
-    await db.delete(sequences).where(eq(sequences.id, p.id));
+    await db.transaction(async (tx) => {
+      // Sent emails keep their history but stop pointing at this sequence's steps and variants. Clearing the links first
+      // avoids a foreign-key error when the steps and variants are deleted along with the sequence.
+      await tx.update(messages).set({ variantId: null, stepId: null, sequenceId: null }).where(eq(messages.sequenceId, p.id));
+      await tx.delete(senderProfiles).where(eq(senderProfiles.ownerSequenceId, p.id));
+      await tx.delete(sequences).where(eq(sequences.id, p.id));
+    });
     return { ok: true };
   });
 
