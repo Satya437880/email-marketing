@@ -142,5 +142,5 @@ ${input.quote.text}`;
 }
 
 function wrapHtml(body: string): string {
-  return `<!doctype html><html><body><div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.5">${body}</div></body></html>`;
+  return `<!doctype html><html><body><div style="font-family:Calibri,Candara,Arial,sans-serif;font-size:10.5pt;line-height:1.5">${body}</div></body></html>`;
 }

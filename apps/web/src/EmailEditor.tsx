@@ -117,8 +117,8 @@ export function RichBody({ html, onChange, editorKey, variables, placeholder, to
   const ref = useRef<HTMLDivElement>(null);
   const [source, setSource] = useState(false);
   const [showFormat, setShowFormat] = useState(false);
-  const [font, setFont] = useState("Arial, Helvetica, sans-serif");
-  const [size, setSize] = useState("11");
+  const [font, setFont] = useState("Calibri, Candara, sans-serif");
+  const [size, setSize] = useState("10.5");
   const [color, setColor] = useState("#222222");
   const imageRef = useRef<HTMLInputElement>(null);
   // Keep every toolbar button on one line: when the editor is narrow, dropdowns show just their icon.
@@ -322,8 +322,8 @@ export function RichBody({ html, onChange, editorKey, variables, placeholder, to
             ref={ref}
             contentEditable
             suppressContentEditableWarning
-            className="p-5 pb-10 text-[15px] leading-relaxed focus:outline-none prose-mail empty:before:content-[attr(data-placeholder)] empty:before:text-ink-400"
-            style={{ minHeight }}
+            className="p-5 pb-10 leading-relaxed focus:outline-none prose-mail empty:before:content-[attr(data-placeholder)] empty:before:text-ink-400"
+            style={{ minHeight, fontFamily: "Calibri, Candara, sans-serif", fontSize: "10.5pt" }}
             data-placeholder={placeholder}
             onInput={() => { sync(); if (pic) setPic(null); }}
             onBlur={sync}
