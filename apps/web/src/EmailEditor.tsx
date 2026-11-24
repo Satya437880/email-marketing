@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, AlignCenter, AlignLeft, AlignRight, Bold, Braces, ChevronDown, Code, Image as ImageIcon, Italic, LayoutTemplate, Link as LinkIcon, Mail, Monitor, Paperclip, Redo2, RefreshCw, Send, Smartphone, Smile, Strikethrough, TableProperties, Trash2, Type, Underline, Undo2, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { api, type Attachment, type Contact, type Mailbox, type Paged } from "./api";
+import { api, type Attachment, type Contact, type Mailbox, type Paged, type ThreadMode } from "./api";
 import { useWs } from "./App";
 import { cx, Modal, SafeHtml, useToast } from "./ui";
 
@@ -370,6 +370,9 @@ export interface EmailEditorProps {
   bodyHtml: string;
   onBody: (html: string) => void;
   subjectPlaceholder?: string;
+  // How this step is threaded. Saved with the step; when it was never set, "reply" is assumed for an empty subject and "new" otherwise.
+  threadMode?: ThreadMode | null;
+  onThreadMode?: (m: ThreadMode) => void;
   editorKey: string;
   // Inside a step card: no card frame or name header of its own (the step card provides them).
   embedded?: boolean;
@@ -395,14 +398,14 @@ const readBase64 = (f: File) => new Promise<string>((res, rej) => {
 });
 
 // Subject + rich-text body editor with variables, templates, spam check, preview send and save-as-template.
-export function EmailEditor({ stepName, onStepName, subject, onSubject, bodyHtml, onBody, subjectPlaceholder, editorKey, embedded, canReply, stats, attachments, onAttachments, replySubject, earlier }: EmailEditorProps) {
+export function EmailEditor({ stepName, onStepName, subject, onSubject, bodyHtml, onBody, subjectPlaceholder, editorKey, embedded, canReply, stats, attachments, onAttachments, replySubject, earlier, threadMode: savedMode, onThreadMode }: EmailEditorProps) {
   const ws = useWs();
   const toast = useToast();
   const qc = useQueryClient();
   const subjectRef = useRef<HTMLInputElement>(null);
   // A follow-up with no subject is sent as a reply in the same thread, so that is what the Type box shows for it.
   // Pick "New thread" to give it its own subject instead.
-  const [threadMode, setThreadMode] = useState<"new" | "reply">(canReply && !subject.trim() ? "reply" : "new");
+  const [threadMode, setThreadMode] = useState<ThreadMode>(canReply ? (savedMode ?? (!subject.trim() ? "reply" : "new")) : "new");
   useEffect(() => {
     setThreadMode(canReply && !subject.trim() ? "reply" : "new");
     // Only when a different step or test is opened, not on every keystroke.
@@ -462,28 +465,31 @@ export function EmailEditor({ stepName, onStepName, subject, onSubject, bodyHtml
         <div className="flex-1 min-w-0">
           <label className="block text-xs text-ink-500 mb-1.5" htmlFor="step-subject">Subject</label>
           <div className="flex flex-nowrap items-center gap-1 rounded-lg border border-ink-200 bg-surface pr-1 focus-within:ring-2 focus-within:ring-brand-500/30 focus-within:border-brand-500">
-            <input id="step-subject" ref={subjectRef} className="flex-1 min-w-0 h-10 bg-transparent px-3 text-[15px] focus:outline-none placeholder:text-ink-400 disabled:text-ink-400"
+            {threadMode === "reply_new_subject" && <span className="pl-3 text-[15px] text-ink-500 select-none" aria-hidden="true">RE:</span>}
+            <input id="step-subject" ref={subjectRef} className={cx("flex-1 min-w-0 h-10 bg-transparent text-[15px] focus:outline-none placeholder:text-ink-400 disabled:text-ink-400", threadMode === "reply_new_subject" ? "pl-1.5 pr-3" : "px-3")}
               disabled={threadMode === "reply"} value={threadMode === "reply" ? `RE: ${replySubject ?? ""}`.trimEnd() : subject} onChange={(e) => onSubject(e.target.value)}
-              placeholder={threadMode === "reply" ? "Replies in the same thread" : (subjectPlaceholder ?? "Enter your subject here (Tip: 2 words are the best for deliverability)")} />
-            {threadMode === "new" && (
+              placeholder={threadMode === "reply" ? "Replies in the same thread" : threadMode === "reply_new_subject" ? "New subject for this reply" : (subjectPlaceholder ?? "Enter your subject here (Tip: 2 words are the best for deliverability)")} />
+            {threadMode !== "reply" && (
               <Dropdown className="shrink-0" label={<span className="whitespace-nowrap">Subject variables</span>} icon={<Braces size={15} />} align="right">
                 {(close) => SUBJECT_VARIABLES.map((v) => <button key={v} className={menuItem} onClick={() => { insertSubjectVar(v); close(); }}>{`{{${v}}}`}</button>)}
               </Dropdown>
             )}
           </div>
         </div>
-        <div className="w-44 shrink-0">
+        <div className="w-72 max-w-[45%] shrink-0">
           <label className="block text-xs text-ink-500 mb-1.5" htmlFor="step-type">Type</label>
           <div className="relative">
             <select id="step-type" className="input appearance-none pr-8 !h-10" disabled={!canReply} value={threadMode}
               onChange={(e) => {
-                const next = e.target.value as "new" | "reply";
+                const next = e.target.value as ThreadMode;
                 setThreadMode(next);
+                onThreadMode?.(next);
                 if (next === "reply") onSubject("");
                 else requestAnimationFrame(() => subjectRef.current?.focus());
               }}>
               <option value="new">New thread</option>
               {canReply && <option value="reply">Reply in same thread</option>}
+              {canReply && <option value="reply_new_subject">Reply in same thread with new subject</option>}
             </select>
             <ChevronDown size={15} className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-ink-500" />
           </div>
@@ -527,7 +533,7 @@ export function EmailEditor({ stepName, onStepName, subject, onSubject, bodyHtml
         </div>
       )}
       </div>
-      <PreviewPane ws={ws} subject={subject} bodyHtml={bodyHtml} replySubject={canReply ? (replySubject ?? "") : undefined} earlier={canReply && !subject.trim() ? earlier : undefined} />
+      <PreviewPane ws={ws} subject={canReply && threadMode === "reply_new_subject" && subject.trim() && !/^re:/i.test(subject.trim()) ? `RE: ${subject.trim()}` : subject} bodyHtml={bodyHtml} replySubject={canReply && threadMode === "reply" ? (replySubject ?? "") : undefined} threaded={canReply && threadMode !== "new"} earlier={canReply && threadMode !== "new" ? earlier : undefined} />
       {showSpam && (
         <aside className="relative min-w-0 p-4 border-t border-ink-100 xl:border-t-0" aria-label="Spam check">
           <button className="absolute right-2 top-2 text-ink-500 hover:text-ink-800" aria-label="Close spam check" onClick={() => setShowSpam(false)}><X size={16} /></button>
@@ -558,7 +564,7 @@ export function EmailEditor({ stepName, onStepName, subject, onSubject, bodyHtml
 }
 
 // Live preview beside the draft: the email as one contact would receive it, with their details filled in.
-function PreviewPane({ ws, subject, bodyHtml, replySubject, earlier }: { ws: string; subject: string; bodyHtml: string; replySubject?: string; earlier?: { subject: string; bodyHtml: string }[] }) {
+function PreviewPane({ ws, subject, bodyHtml, replySubject, earlier, threaded }: { ws: string; subject: string; bodyHtml: string; replySubject?: string; threaded?: boolean; earlier?: { subject: string; bodyHtml: string }[] }) {
   const contacts = useQuery({ queryKey: ["contacts", ws, "preview-picker"], queryFn: () => api<Paged<Contact>>(`/v1/workspaces/${ws}/contacts?pageSize=100`) });
   const [contactId, setContactId] = useState("");
   const [device, setDevice] = useState<"desktop" | "mobile">("desktop");
@@ -572,13 +578,13 @@ function PreviewPane({ ws, subject, bodyHtml, replySubject, earlier }: { ws: str
     let live = true;
     setLoading(true);
     const t = setTimeout(() => {
-      api<{ subject: string; replySubject?: string; html: string; contact: { id: string; email: string } | null }>(`/v1/workspaces/${ws}/preview`, { body: { subject, bodyHtml, replySubject, earlier: showThread ? earlier : undefined, contactId: contactId || undefined } })
+      api<{ subject: string; replySubject?: string; html: string; contact: { id: string; email: string } | null }>(`/v1/workspaces/${ws}/preview`, { body: { subject, bodyHtml, replySubject, threaded, earlier: showThread ? earlier : undefined, contactId: contactId || undefined } })
         .then((r) => { if (live) setData(r); })
         .catch(() => { if (live) setData(null); })
         .finally(() => { if (live) setLoading(false); });
     }, 400);
     return () => { live = false; clearTimeout(t); };
-  }, [ws, subject, bodyHtml, replySubject, JSON.stringify(earlier ?? []), showThread, contactId, nonce]);
+  }, [ws, subject, bodyHtml, replySubject, threaded, JSON.stringify(earlier ?? []), showThread, contactId, nonce]);
 
   const list = contacts.data?.items ?? [];
   const nameOf = (c: Contact) => `${c.firstName} ${c.lastName}`.trim() || c.email;

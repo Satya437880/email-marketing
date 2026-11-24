@@ -61,7 +61,8 @@ export interface SequenceRow {
 
 export interface Attachment { name: string; type: string; size: number; data: string }
 export interface Variant { id?: string; label: string; subject: string; bodyHtml: string; weight: number; attachments?: Attachment[] }
-export interface Step { id?: string; type: "delay" | "email"; name: string; delayDays: number; delayMinutes: number; variants: Variant[]; sent?: number; waiting?: number }
+export type ThreadMode = "new" | "reply" | "reply_new_subject";
+export interface Step { id?: string; type: "delay" | "email"; name: string; delayDays: number; delayMinutes: number; threadMode?: ThreadMode | null; variants: Variant[]; sent?: number; waiting?: number }
 export interface SequenceDetail extends Pick<SequenceRow, "id" | "name" | "status" | "priority" | "createdAt" | "launchedAt"> {
   settings: SequenceSettings; steps: Step[]; senderProfileIds: string[]; contactCount: number;
 }

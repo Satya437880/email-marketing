@@ -48,6 +48,7 @@ const stepsSchema = z.object({
     name: z.string().max(100).default(""),
     delayDays: z.number().int().min(0).max(365).default(0),
     delayMinutes: z.number().int().min(0).max(365 * 1440).default(0),
+    threadMode: z.enum(["new", "reply", "reply_new_subject"]).nullable().optional(),
     variants: z.array(z.object({
       id: z.string().uuid().optional(),
       label: z.string().max(5),
@@ -281,9 +282,9 @@ export async function sequenceRoutes(app: FastifyInstance) {
       for (const [position, s] of b.steps.entries()) {
         let stepId = s.id && existingIds.has(s.id) ? s.id : undefined;
         if (stepId) {
-          await tx.update(sequenceSteps).set({ position, type: s.type, name: s.name, delayDays: s.delayDays, delayMinutes: s.delayMinutes }).where(eq(sequenceSteps.id, stepId));
+          await tx.update(sequenceSteps).set({ position, type: s.type, name: s.name, delayDays: s.delayDays, delayMinutes: s.delayMinutes, threadMode: s.type === "email" ? s.threadMode ?? null : null }).where(eq(sequenceSteps.id, stepId));
         } else {
-          stepId = (await tx.insert(sequenceSteps).values({ sequenceId: seq.id, position, type: s.type, name: s.name, delayDays: s.delayDays, delayMinutes: s.delayMinutes }).returning())[0]!.id;
+          stepId = (await tx.insert(sequenceSteps).values({ sequenceId: seq.id, position, type: s.type, name: s.name, delayDays: s.delayDays, delayMinutes: s.delayMinutes, threadMode: s.type === "email" ? s.threadMode ?? null : null }).returning())[0]!.id;
         }
         keep.add(stepId);
         const current = await tx.select({ id: stepVariants.id }).from(stepVariants).where(eq(stepVariants.stepId, stepId));
@@ -383,7 +384,7 @@ export async function sequenceRoutes(app: FastifyInstance) {
     const steps = await loadSteps(seq.id);
     const [copy] = await db.insert(sequences).values({ workspaceId: seq.workspaceId, name: `${seq.name} (copy)`, priority: seq.priority, settings: seq.settings }).returning();
     for (const s of steps) {
-      const [ns] = await db.insert(sequenceSteps).values({ sequenceId: copy!.id, position: s.position, type: s.type, name: s.name, delayDays: s.delayDays, delayMinutes: s.delayMinutes }).returning();
+      const [ns] = await db.insert(sequenceSteps).values({ sequenceId: copy!.id, position: s.position, type: s.type, name: s.name, delayDays: s.delayDays, delayMinutes: s.delayMinutes, threadMode: s.threadMode }).returning();
       if (s.variants.length) await db.insert(stepVariants).values(s.variants.map((v) => ({ stepId: ns!.id, label: v.label, subject: v.subject, bodyHtml: v.bodyHtml, weight: v.weight, attachments: v.attachments })));
     }
     const senders = await db.select({ id: senderProfiles.id, owner: senderProfiles.ownerSequenceId }).from(sequenceSenders)
@@ -506,7 +507,7 @@ export async function sequenceRoutes(app: FastifyInstance) {
 
   // Renders a step for one contact (or sample data) and scores it, for the editor's Preview tab.
   app.post("/v1/workspaces/:ws/preview", async (req) => {
-    const b = body(req, z.object({ subject: z.string().default(""), bodyHtml: z.string().default(""), replySubject: z.string().max(500).optional(), earlier: z.array(z.object({ subject: z.string().default(""), bodyHtml: z.string().default("") })).max(20).optional(), contactId: z.string().uuid().optional() }));
+    const b = body(req, z.object({ subject: z.string().default(""), bodyHtml: z.string().default(""), replySubject: z.string().max(500).optional(), earlier: z.array(z.object({ subject: z.string().default(""), bodyHtml: z.string().default("") })).max(20).optional(), threaded: z.boolean().optional(), contactId: z.string().uuid().optional() }));
     const workspaceId = wsId(req);
     const contact = b.contactId
       ? await db.query.contacts.findFirst({ where: and(eq(contacts.id, b.contactId), eq(contacts.workspaceId, workspaceId)) })
@@ -526,7 +527,9 @@ export async function sequenceRoutes(app: FastifyInstance) {
     const optOut = settings.optOut.enabled ? { url: "#", text: settings.optOut.text, replyOnly: settings.optOut.replyOnly } : null;
     const signatureHtml = mailbox ? renderSignature(mailbox, `${seed}:sig`) : undefined;
     // Follow-up replying in the thread: the earlier steps are rebuilt (oldest first) as they would already have been sent, then quoted newest first.
-    const { quote } = subject.trim() ? { quote: undefined } : earlierThread({ earlier: b.earlier ?? [], vars, seed, from: { name: sender.fromName, address: sender.email }, to: contact?.email ?? "sample@example.com", signatureHtml, optOut, timeZone: mailbox?.timezone, contactName: contact ? `${contact.firstName} ${contact.lastName}`.trim() : "" });
+    // "threaded" comes from the step type (reply in the same thread, with or without a new subject); older callers fall back to the empty-subject rule.
+    const threaded = b.threaded ?? !subject.trim();
+    const { quote } = !threaded ? { quote: undefined } : earlierThread({ earlier: b.earlier ?? [], vars, seed, from: { name: sender.fromName, address: sender.email }, to: contact?.email ?? "sample@example.com", signatureHtml, optOut, timeZone: mailbox?.timezone, contactName: contact ? `${contact.firstName} ${contact.lastName}`.trim() : "" });
     const html = bodyHtml.trim() ? composeEmail({
       from: { name: sender.fromName, address: sender.email },
       to: contact?.email ?? "sample@example.com",

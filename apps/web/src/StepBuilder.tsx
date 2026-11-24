@@ -213,6 +213,8 @@ export function StepBuilder({ steps, onChange }: { steps: Step[]; onChange: (ste
                     <EmailEditor
                       embedded
                       canReply={i > 0}
+                      threadMode={b.threadMode ?? null}
+                      onThreadMode={(threadMode) => updateBlock(i, { threadMode })}
                       replySubject={threadSubject(i)}
                       earlier={blocks.slice(0, i).map((x) => ({ subject: x.variants[0]?.subject ?? "", bodyHtml: x.variants[0]?.bodyHtml ?? "" }))}
                       stats={{ sent: b.sent ?? 0, waiting: b.waiting ?? 0 }}
@@ -225,7 +227,7 @@ export function StepBuilder({ steps, onChange }: { steps: Step[]; onChange: (ste
                       onBody={(bodyHtml) => updateVariant(i, { bodyHtml })}
                       attachments={variant.attachments ?? []}
                       onAttachments={(attachments) => updateVariant(i, { attachments })}
-                      subjectPlaceholder={i > 0 ? "Leave empty to reply in the same thread" : undefined}
+                      subjectPlaceholder={i > 0 ? "Enter the subject for this email" : undefined}
                     />
                   )}
                 </>

@@ -102,9 +102,17 @@ export async function executeSend(job: SendJob, opts: { trackingBaseUrl: string;
   const renderedSubject = render(variant.subject, vars, { seed: `${seed}:s` }).trim();
   const bodyHtml = render(variant.bodyHtml, vars, { seed, html: true });
 
-  // A follow-up with an empty subject replies in the existing thread; anything else starts a new one.
+  // Each email step chooses how it is threaded: "new" starts a new thread, "reply" replies in the existing thread with the same subject,
+  // and "reply_new_subject" replies in the existing thread under a new subject. A step with no choice keeps the older rule: an empty
+  // subject replies in the thread and anything else starts a new one. The first email always starts a thread.
   let thread = sc.threadId ? await db.query.threads.findFirst({ where: eq(threads.id, sc.threadId) }) : undefined;
-  const continueThread = !!thread && renderedSubject === "";
+  const isFirstEmail = steps.find((s) => s.type === "email")?.id === step.id;
+  const mode = isFirstEmail ? "new"
+    : step.threadMode === "new" || step.threadMode === "reply" || step.threadMode === "reply_new_subject" ? step.threadMode
+      : renderedSubject === "" ? "reply" : "new";
+  const continueThread = !!thread && mode !== "new";
+  // Replying with the same subject keeps the thread's subject; a new subject is used as written (the thread's own subject if left empty).
+  const keepSubject = continueThread && (mode === "reply" || renderedSubject === "");
   let threadHeaders: { inReplyTo: string; references: string[] } | undefined;
   let quote: { html: string; text: string; from: string; sentAt: Date } | undefined;
   const contactRow = await db.query.contacts.findFirst({ where: eq(contacts.id, sc.contactId) });
@@ -125,14 +133,14 @@ export async function executeSend(job: SendJob, opts: { trackingBaseUrl: string;
   // Follow-ups are written with an empty subject so they reply in the contact's thread. A contact with no thread to reply in (they never
   // got the first email) would otherwise receive "(no subject)", so the sequence's first email subject is used instead.
   let openerSubject = "";
-  if (!continueThread && renderedSubject === "") {
+  if (!keepSubject && renderedSubject === "") {
     const firstEmail = steps.find((s) => s.type === "email");
     if (firstEmail && firstEmail.id !== step.id) {
       const [v] = await db.select().from(stepVariants).where(eq(stepVariants.stepId, firstEmail.id)).orderBy(asc(stepVariants.label)).limit(1);
       if (v) openerSubject = render(v.subject, vars, { seed: `${seed}:s0` }).trim();
     }
   }
-  const subject = continueThread && thread ? thread.subject : renderedSubject || openerSubject || "(no subject)";
+  const subject = keepSubject && thread ? thread.subject : renderedSubject || openerSubject || "(no subject)";
 
   const token = trackingToken();
   const base = mailbox.trackingDomain && mailbox.trackingDomainVerified ? `https://${mailbox.trackingDomain}` : opts.trackingBaseUrl.replace(/\/$/, "");

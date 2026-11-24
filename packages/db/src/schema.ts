@@ -309,6 +309,9 @@ export const sequenceSteps = pgTable("sequence_steps", {
   delayDays: integer("delay_days").notNull().default(0),
   // Waits shorter than a day (or not a whole number of days). The wait before a step is delay_days + delay_minutes.
   delayMinutes: integer("delay_minutes").notNull().default(0),
+  // How an email step is threaded: "new" (new thread), "reply" (same thread, same subject) or "reply_new_subject" (same thread, new subject).
+  // Empty keeps the older rule: an empty subject replies in the thread, any other subject starts a new one.
+  threadMode: text("thread_mode"),
 },(t) => [index("sequence_steps_seq").on(t.sequenceId, t.position)]);
 
 // A file attached to an email step. Content is stored base64-encoded.
