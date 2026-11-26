@@ -1,3 +1,4 @@
+import { useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, AlignCenter, AlignLeft, AlignRight, Bold, Braces, ChevronDown, Code, Image as ImageIcon, Italic, LayoutTemplate, Link as LinkIcon, Mail, Monitor, Paperclip, Redo2, RefreshCw, Send, Smartphone, Smile, Strikethrough, TableProperties, Trash2, Type, Underline, Undo2, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -533,7 +534,7 @@ export function EmailEditor({ stepName, onStepName, subject, onSubject, bodyHtml
         </div>
       )}
       </div>
-      <PreviewPane ws={ws} subject={canReply && threadMode === "reply_new_subject" && subject.trim() && !/^re:/i.test(subject.trim()) ? `RE: ${subject.trim()}` : subject} bodyHtml={bodyHtml} replySubject={canReply && threadMode === "reply" ? (replySubject ?? "") : undefined} threaded={canReply && threadMode !== "new"} earlier={canReply ? earlier : undefined} />
+      <PreviewPane ws={ws} subject={canReply && threadMode === "reply" ? "" : canReply && threadMode === "reply_new_subject" && subject.trim() && !/^re:/i.test(subject.trim()) ? `RE: ${subject.trim()}` : subject} bodyHtml={bodyHtml} replySubject={canReply && threadMode === "reply" ? (replySubject ?? "") : undefined} threaded={canReply && threadMode !== "new"} earlier={canReply ? earlier : undefined} />
       {showSpam && (
         <aside className="relative min-w-0 p-4 border-t border-ink-100 xl:border-t-0" aria-label="Spam check">
           <button className="absolute right-2 top-2 text-ink-500 hover:text-ink-800" aria-label="Close spam check" onClick={() => setShowSpam(false)}><X size={16} /></button>
@@ -557,7 +558,7 @@ export function EmailEditor({ stepName, onStepName, subject, onSubject, bodyHtml
         )}
       </div>
 
-      {preview && <PreviewModal ws={ws} subject={subject} bodyHtml={bodyHtml} earlier={canReply && !subject.trim() ? earlier : undefined} onClose={() => setPreview(false)} />}
+      {preview && <PreviewModal ws={ws} subject={canReply && threadMode === "reply" ? "" : subject} bodyHtml={bodyHtml} threaded={canReply && threadMode !== "new"} earlier={canReply && threadMode !== "new" ? earlier : undefined} onClose={() => setPreview(false)} />}
       {saveTpl && <SaveTemplateModal ws={ws} subject={subject} bodyHtml={bodyHtml} onClose={() => setSaveTpl(false)} onSaved={() => qc.invalidateQueries({ queryKey: ["templates", ws] })} />}
     </div>
   );
@@ -565,11 +566,14 @@ export function EmailEditor({ stepName, onStepName, subject, onSubject, bodyHtml
 
 // Live preview beside the draft: the email as one contact would receive it, with their details filled in.
 function PreviewPane({ ws, subject, bodyHtml, replySubject, earlier, threaded }: { ws: string; subject: string; bodyHtml: string; replySubject?: string; threaded?: boolean; earlier?: { subject: string; bodyHtml: string }[] }) {
+  // Inside the sequence builder the preview uses that sequence's saved opt-out setting.
+  const { id: sequenceId } = useParams();
   const contacts = useQuery({ queryKey: ["contacts", ws, "preview-picker"], queryFn: () => api<Paged<Contact>>(`/v1/workspaces/${ws}/contacts?pageSize=100`) });
   const [contactId, setContactId] = useState("");
   const [device, setDevice] = useState<"desktop" | "mobile">("desktop");
   const [nonce, setNonce] = useState(0);
-  const [showThread, setShowThread] = useState(false);
+  // On by default: the recipient of a follow-up gets the earlier emails underneath.
+  const [showThread, setShowThread] = useState(true);
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<{ subject: string; replySubject?: string; html: string; contact: { id: string; email: string } | null } | null>(null);
 
@@ -578,7 +582,7 @@ function PreviewPane({ ws, subject, bodyHtml, replySubject, earlier, threaded }:
     let live = true;
     setLoading(true);
     const t = setTimeout(() => {
-      api<{ subject: string; replySubject?: string; html: string; contact: { id: string; email: string } | null }>(`/v1/workspaces/${ws}/preview`, { body: { subject, bodyHtml, replySubject, threaded, earlier: showThread ? earlier : undefined, contactId: contactId || undefined } })
+      api<{ subject: string; replySubject?: string; html: string; contact: { id: string; email: string } | null }>(`/v1/workspaces/${ws}/preview`, { body: { subject, bodyHtml, replySubject, threaded, earlier: showThread ? earlier : undefined, contactId: contactId || undefined, sequenceId } })
         .then((r) => { if (live) setData(r); })
         .catch(() => { if (live) setData(null); })
         .finally(() => { if (live) setLoading(false); });
@@ -634,13 +638,14 @@ function PreviewPane({ ws, subject, bodyHtml, replySubject, earlier, threaded }:
   );
 }
 
-function PreviewModal({ ws, subject, bodyHtml, earlier, onClose }: { ws: string; subject: string; bodyHtml: string; earlier?: { subject: string; bodyHtml: string }[]; onClose: () => void }) {
+function PreviewModal({ ws, subject, bodyHtml, threaded, earlier, onClose }: { ws: string; subject: string; bodyHtml: string; threaded?: boolean; earlier?: { subject: string; bodyHtml: string }[]; onClose: () => void }) {
+  const { id: sequenceId } = useParams();
   const toast = useToast();
   const mailboxes = useQuery({ queryKey: ["mailboxes", ws], queryFn: () => api<Mailbox[]>(`/v1/workspaces/${ws}/mailboxes`) });
   const [to, setTo] = useState("");
   const [mailboxId, setMailboxId] = useState("");
   const send = useMutation({
-    mutationFn: () => api(`/v1/workspaces/${ws}/send-test`, { body: { mailboxId: mailboxId || mailboxes.data?.[0]?.id, to, subject, bodyHtml, earlier } }),
+    mutationFn: () => api(`/v1/workspaces/${ws}/send-test`, { body: { mailboxId: mailboxId || mailboxes.data?.[0]?.id, to, subject, bodyHtml, threaded, earlier, sequenceId } }),
     onSuccess: () => { toast(`Preview sent to ${to}`); onClose(); },
     onError: (e: Error) => toast(e.message, "error"),
   });

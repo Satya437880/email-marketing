@@ -903,6 +903,12 @@ function SettingsTab({ sequence, onChange, section = "all", registerSave, onDirt
           <Toggle label="Opt-out link at the bottom of email" checked={st.optOut.enabled} onChange={(v) => set("optOut", { ...st.optOut, enabled: v })} />
           {st.optOut.enabled && (
             <label className="block">
+              <span className="block text-sm font-medium mb-1">Sentence before the link</span>
+              <input className="input h-10" value={st.optOut.lead ?? "If you'd rather not hear from me, let me know"} maxLength={200} onChange={(e) => set("optOut", { ...st.optOut, lead: e.target.value })} />
+            </label>
+          )}
+          {st.optOut.enabled && (
+            <label className="block">
               <span className="block text-sm font-medium mb-1">Customize opt-out link</span>
               <input className="input h-10" value={st.optOut.text} maxLength={200} onChange={(e) => set("optOut", { ...st.optOut, text: e.target.value })} placeholder="Opt-out" />
             </label>

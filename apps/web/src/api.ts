@@ -48,7 +48,7 @@ export interface SequenceSettings {
   inSequencePriority: "new_first" | "followups_first";
   stopOnCompanyReply: boolean; sequentialWithinCompany: boolean; companyLimit: number | null;
   oooAutoResume: boolean; oooBufferDays: number; plainText: boolean; espMatching: boolean;
-  optOut: { enabled: boolean; text: string }; trackOpens: boolean; trackClicks: boolean; cc: string[]; bcc: string[];
+  optOut: { enabled: boolean; text: string; lead?: string }; trackOpens: boolean; trackClicks: boolean; cc: string[]; bcc: string[];
   language?: string; productId?: string | null; pauseOnClick?: boolean; pauseOnOpen?: boolean; bounceShield?: boolean; trackOpportunities?: boolean;
 }
 

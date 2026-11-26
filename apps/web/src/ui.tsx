@@ -276,7 +276,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 // Renders untrusted email HTML in a sandboxed iframe: no scripts, no access to the app's cookies or DOM.
 export function SafeHtml({ html, minHeight = 48 }: { html: string; minHeight?: number }) {
   const [height, setHeight] = useState(minHeight);
-  const doc = `<!doctype html><html><head><meta charset="utf-8"><base target="_blank"><style>body{margin:0;font-family:Calibri,Candara,Arial,sans-serif;font-size:10.5pt;line-height:1.5;color:#000;background:#fff;padding:8px;border-radius:6px}p{margin:0 0 .6em}a{color:#6B2737}</style></head><body>${html}</body></html>`;
+  const doc = `<!doctype html><html><head><meta charset="utf-8"><base target="_blank"><style>body{margin:0;font-family:Calibri,Candara,Arial,sans-serif;font-size:10.5pt;line-height:1.5;color:#000;background:#fff;padding:8px;border-radius:6px}</style></head><body>${html}</body></html>`;
   return (
     <iframe
       title="Preview"

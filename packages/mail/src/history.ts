@@ -31,7 +31,7 @@ function ownHtml(m: HistoryMessage): string {
   if (m.direction === "out" && m.bodyHtml) {
     let h = m.bodyHtml.replace(/^[\s\S]*?line-height:1\.5">/i, "").replace(/<\/div><\/body><\/html>\s*$/i, "");
     // History added by this app, in either of its styles (Outlook-style block or the older "wrote:" quote), is cut off.
-    const cut = [h.search(/<hr data-quote/i), h.search(/<div style="margin:0;padding:0">On [^<]*wrote:<\/div>\s*<blockquote/i)].filter((i) => i >= 0);
+    const cut = [h.search(/<(?:hr|div) data-quote/i), h.search(/<div style="margin:0;padding:0">On [^<]*wrote:<\/div>\s*<blockquote/i)].filter((i) => i >= 0);
     if (cut.length) h = h.slice(0, Math.min(...cut));
     return tidy(h
       .replace(/<div style="margin:0;padding:0;font-size:10px[^>]*>[\s\S]*?<\/div>/gi, "")
@@ -79,11 +79,12 @@ export function buildQuoteHistory(messages: HistoryMessage[], opts: { timeZone?:
     const subject = reSubject(m.subject);
     const body = ownHtml(m);
     htmlBlocks.push(
-      `<hr data-quote style="border:0;border-top:1px solid #e1e1e1;margin:2px 0 4px 0;height:0;line-height:0;font-size:0">`
+      // The line is a top border on the header block, as Outlook writes it. Desktop Outlook often does not draw an <hr>.
+      `<div data-quote style="margin:8px 0 0 0;border:0;border-top:solid #e1e1e1 1.0pt;padding:3pt 0 0 0">`
       + `<div style="${FONT}"><b>From:</b> ${who.html}<br><b>Sent:</b> ${escapeHtml(sent)}`
       + (to ? `<br><b>To:</b> ${to.html}` : "")
       + (subject ? `<br><b>Subject:</b> ${escapeHtml(subject)}` : "")
-      + `</div><div style="margin:8px 0 0 0">${body}</div>`,
+      + `</div></div><div style="margin:8px 0 0 0">${body}</div>`,
     );
     textBlocks.push(`________________________________\nFrom: ${who.text}\nSent: ${sent}\n${to ? `To: ${to.text}\n` : ""}${subject ? `Subject: ${subject}\n` : ""}\n${htmlToText(body).trim()}`);
   }

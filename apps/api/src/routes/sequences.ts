@@ -3,7 +3,7 @@ import {
   contacts, db, DEFAULT_SEQUENCE_SETTINGS, labels, mailboxes, messages, products, senderProfileMailboxes, senderProfiles, sequenceContacts, sequences, sequenceSenders, sequenceSteps, stepVariants,
   type SequenceSettings,
 } from "@outreach/db";
-import { buildQuoteHistory, composeEmail, type HistoryMessage, type Variables, render, sendSmtp, spamCheck } from "@outreach/mail";
+import { buildQuoteHistory, composeEmail, escapeHtml, type HistoryMessage, type Variables, render, sendSmtp, spamCheck } from "@outreach/mail";
 import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -26,7 +26,7 @@ const settingsSchema = z.object({
   oooBufferDays: z.number().int().min(0).max(30),
   plainText: z.boolean(),
   espMatching: z.boolean(),
-  optOut: z.object({ enabled: z.boolean(), text: z.string().trim().max(200) }),
+  optOut: z.object({ enabled: z.boolean(), text: z.string().trim().max(200), lead: z.string().trim().max(200).optional() }),
   trackOpens: z.boolean(),
   trackClicks: z.boolean(),
   cc: z.array(z.string().email()).max(5),
@@ -107,8 +107,25 @@ function sampleSendTimes(count: number, timeZone: string): Date[] {
   return out;
 }
 
+// The mailbox a preview is written from, so its signature is the one the recipient gets: the mailbox already assigned to this
+// contact, else one picked for the sequence, else any mailbox of the workspace.
+async function previewMailbox(workspaceId: string, sequenceId?: string, contactId?: string) {
+  const find = (id: string) => db.query.mailboxes.findFirst({ where: and(eq(mailboxes.id, id), eq(mailboxes.workspaceId, workspaceId)) });
+  if (sequenceId) {
+    const [assigned] = contactId
+      ? await db.select({ id: sequenceContacts.assignedMailboxId }).from(sequenceContacts).where(and(eq(sequenceContacts.sequenceId, sequenceId), eq(sequenceContacts.contactId, contactId)))
+      : [];
+    const [picked] = await db.select({ id: senderProfileMailboxes.mailboxId }).from(sequenceSenders)
+      .innerJoin(senderProfileMailboxes, eq(senderProfileMailboxes.senderProfileId, sequenceSenders.senderProfileId))
+      .where(eq(sequenceSenders.sequenceId, sequenceId)).orderBy(asc(senderProfileMailboxes.mailboxId)).limit(1);
+    const id = assigned?.id ?? picked?.id;
+    if (id) return find(id);
+  }
+  return db.query.mailboxes.findFirst({ where: eq(mailboxes.workspaceId, workspaceId) });
+}
+
 // Rebuilds the thread above a follow-up from the drafts of the earlier steps, the way it would look once they had been sent.
-function earlierThread(o: { earlier: { subject: string; bodyHtml: string }[]; vars: Variables; seed: string; from: { name: string; address: string }; to: string; signatureHtml?: string; optOut: { url: string; text: string } | null; timeZone?: string; contactName: string }) {
+function earlierThread(o: { earlier: { subject: string; bodyHtml: string }[]; vars: Variables; seed: string; from: { name: string; address: string }; to: string; signatureHtml?: string; optOut: { url: string; text: string; lead?: string } | null; timeZone?: string; contactName: string }) {
   const names: Record<string, string> = { [o.from.address.toLowerCase()]: o.from.name, ...(o.contactName ? { [o.to.toLowerCase()]: o.contactName } : {}) };
   const sentBefore: HistoryMessage[] = [];
   let opener = "";
@@ -507,12 +524,14 @@ export async function sequenceRoutes(app: FastifyInstance) {
 
   // Renders a step for one contact (or sample data) and scores it, for the editor's Preview tab.
   app.post("/v1/workspaces/:ws/preview", async (req) => {
-    const b = body(req, z.object({ subject: z.string().default(""), bodyHtml: z.string().default(""), replySubject: z.string().max(500).optional(), earlier: z.array(z.object({ subject: z.string().default(""), bodyHtml: z.string().default("") })).max(20).optional(), threaded: z.boolean().optional(), contactId: z.string().uuid().optional() }));
+    const b = body(req, z.object({ subject: z.string().default(""), bodyHtml: z.string().default(""), replySubject: z.string().max(500).optional(), earlier: z.array(z.object({ subject: z.string().default(""), bodyHtml: z.string().default("") })).max(20).optional(), threaded: z.boolean().optional(), contactId: z.string().uuid().optional(), sequenceId: z.string().uuid().optional() }));
     const workspaceId = wsId(req);
     const contact = b.contactId
       ? await db.query.contacts.findFirst({ where: and(eq(contacts.id, b.contactId), eq(contacts.workspaceId, workspaceId)) })
       : await db.query.contacts.findFirst({ where: eq(contacts.workspaceId, workspaceId), orderBy: desc(contacts.createdAt) });
-    const mailbox = await db.query.mailboxes.findFirst({ where: eq(mailboxes.workspaceId, workspaceId) });
+    // Loaded first: it also checks the sequence belongs to this workspace.
+    const settings = b.sequenceId ? (await owned(workspaceId, b.sequenceId)).settings : DEFAULT_SEQUENCE_SETTINGS;
+    const mailbox = await previewMailbox(workspaceId, b.sequenceId, contact?.id);
     const sender = { fromName: mailbox?.fromName ?? "Alex Sender", email: mailbox?.email ?? "alex@example.com" };
     const vars = contact
       ? contactVariables(contact, sender)
@@ -523,25 +542,26 @@ export async function sequenceRoutes(app: FastifyInstance) {
     const replySubject = b.replySubject === undefined ? undefined : render(b.replySubject, vars, { seed: `${seed}:r` });
     const bodyHtml = render(b.bodyHtml, vars, { seed, html: true });
     // Preview what is actually sent: body + mailbox signature + opt-out line.
-    const settings = DEFAULT_SEQUENCE_SETTINGS;
-    const optOut = settings.optOut.enabled ? { url: "#", text: settings.optOut.text } : null;
+    const optOut = settings.optOut.enabled ? { url: "#", text: settings.optOut.text, lead: settings.optOut.lead } : null;
     const signatureHtml = mailbox ? renderSignature(mailbox, `${seed}:sig`) : undefined;
     // Follow-up replying in the thread: the earlier steps are rebuilt (oldest first) as they would already have been sent, then quoted newest first.
     // "threaded" comes from the step type (reply in the same thread, with or without a new subject); older callers fall back to the empty-subject rule.
     const threaded = b.threaded ?? !subject.trim();
     const { quote } = !threaded ? { quote: undefined } : earlierThread({ earlier: b.earlier ?? [], vars, seed, from: { name: sender.fromName, address: sender.email }, to: contact?.email ?? "sample@example.com", signatureHtml, optOut, timeZone: mailbox?.timezone, contactName: contact ? `${contact.firstName} ${contact.lastName}`.trim() : "" });
-    const html = bodyHtml.trim() ? composeEmail({
+    const email = bodyHtml.trim() ? composeEmail({
       from: { name: sender.fromName, address: sender.email },
       to: contact?.email ?? "sample@example.com",
       subject,
       bodyHtml,
       signatureHtml,
-      plainText: false,
+      plainText: settings.plainText,
       keepDataImages: true,
       optOut,
       thread: quote ? { inReplyTo: "x", references: [] } : undefined,
       quote,
-    }).html : "";
+    }) : undefined;
+    // A plain-text sequence sends no HTML, so the preview shows the text exactly as written.
+    const html = !email ? "" : settings.plainText ? `<div style="white-space:pre-wrap">${escapeHtml(email.text)}</div>` : email.html;
     return { subject, replySubject, html, contact: contact ? { id: contact.id, email: contact.email } : null, spam: spamCheck(subject, html) };
   });
 
@@ -551,28 +571,28 @@ export async function sequenceRoutes(app: FastifyInstance) {
   });
 
   app.post("/v1/workspaces/:ws/send-test", async (req) => {
-    const b = body(req, z.object({ mailboxId: z.string().uuid(), to: z.string().email(), subject: z.string(), bodyHtml: z.string(), earlier: z.array(z.object({ subject: z.string().default(""), bodyHtml: z.string().default("") })).max(20).optional() }));
+    const b = body(req, z.object({ mailboxId: z.string().uuid(), to: z.string().email(), subject: z.string(), bodyHtml: z.string(), threaded: z.boolean().optional(), earlier: z.array(z.object({ subject: z.string().default(""), bodyHtml: z.string().default("") })).max(20).optional(), sequenceId: z.string().uuid().optional() }));
     const workspaceId = wsId(req);
     const mailbox = await db.query.mailboxes.findFirst({ where: and(eq(mailboxes.id, b.mailboxId), eq(mailboxes.workspaceId, workspaceId)) });
     if (!mailbox) notFound("Mailbox");
     const contact = await db.query.contacts.findFirst({ where: and(eq(contacts.workspaceId, workspaceId), eq(contacts.email, b.to.toLowerCase())) });
     const vars = contact ? contactVariables(contact, mailbox) : { first_name: "there", sender_name: mailbox.fromName };
     const seed = `test:${Date.now()}`;
-    // The test is built exactly like a real send (same subject, signature, reply-only opt-out line and thread), so it shows what the recipient gets.
+    // The test is built exactly like a real send (same subject, signature, this sequence's opt-out and thread), so it shows what the recipient gets.
     // A follow-up (empty subject) with earlier steps is sent as a reply carrying the whole thread.
     const signatureHtml = renderSignature(mailbox, seed);
-    const settings = DEFAULT_SEQUENCE_SETTINGS;
-    const optOut = settings.optOut.enabled ? { url: "#", text: settings.optOut.text } : null;
-    const asReply = !b.subject.trim() && !!b.earlier?.length;
+    const settings = b.sequenceId ? (await owned(workspaceId, b.sequenceId)).settings : DEFAULT_SEQUENCE_SETTINGS;
+    const optOut = settings.optOut.enabled ? { url: "#", text: settings.optOut.text, lead: settings.optOut.lead } : null;
+    const asReply = (b.threaded ?? !b.subject.trim()) && !!b.earlier?.length;
     const ownSubject = render(b.subject, vars, { seed: `${seed}:s` }).trim() || "(follow-up)";
     const thread = asReply ? earlierThread({ earlier: b.earlier!, vars, seed, from: { name: mailbox.fromName, address: mailbox.email }, to: b.to, signatureHtml, optOut, timeZone: mailbox.timezone, contactName: contact ? `${contact.firstName} ${contact.lastName}`.trim() : "" }) : undefined;
     const email = composeEmail({
       from: { name: mailbox.fromName, address: mailbox.email },
       to: b.to,
-      subject: thread ? thread.opener.trim() : ownSubject,
+      subject: thread ? render(b.subject, vars, { seed: `${seed}:s` }).trim() || thread.opener.trim() : ownSubject,
       bodyHtml: render(b.bodyHtml, vars, { seed, html: true }),
       signatureHtml,
-      plainText: false,
+      plainText: settings.plainText,
       optOut,
       thread: thread?.quote ? { inReplyTo: `<test-${Date.now()}@${mailbox.email.split("@")[1]}>`, references: [] } : undefined,
       quote: thread?.quote,

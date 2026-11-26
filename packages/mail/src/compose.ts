@@ -23,8 +23,8 @@ export interface ComposeInput {
   bodyHtml: string;
   signatureHtml?: string;
   plainText: boolean;
-  // text is shown at the bottom of the email as the unsubscribe link itself.
-  optOut?: { url: string; mailto?: string; text: string } | null;
+  // Bottom of the email: the lead sentence as plain words, then text as the unsubscribe link.
+  optOut?: { url: string; mailto?: string; text: string; lead?: string } | null;
   openPixelUrl?: string | null;
   clickRewrite?: ((url: string) => string) | null;
   thread?: { inReplyTo: string; references: string[] };
@@ -76,11 +76,14 @@ export function composeEmail(input: ComposeInput): OutgoingEmail {
 
   // With no public web address configured the opt-out cannot be a link; recipients are asked to reply instead (replies saying so are detected).
   const optLocal = !!input.optOut && isLocalUrl(input.optOut.url);
-  const optText = input.optOut?.text.trim() || "Opt-out";
+  const optLead = (input.optOut?.lead ?? "If you'd rather not hear from me, let me know").trim();
+  // Older sequences saved the whole sentence as the link text; it is not printed twice.
+  const typed = input.optOut?.text.trim();
+  const optText = typed && typed !== optLead ? typed : "Opt-out";
   if (input.optOut) {
     // Directly under the signature, no blank line (still one blank line after the body if there is no signature).
     const hasSig = html.endsWith(input.signatureHtml?.replace(leading, "") ?? "\0") && !!input.signatureHtml?.replace(leading, "").trim();
-    html += `${hasSig ? "" : gap}<div style="margin:0;padding:0;font-size:10px;line-height:1.3;color:#888">${optLocal ? `${escapeHtml(optText)}: just reply “unsubscribe”.` : `<a href="${escapeHtml(input.optOut.url)}">${escapeHtml(optText)}</a>`}</div>`;
+    html += `${hasSig ? "" : gap}<div style="margin:0;padding:0;font-size:10px;line-height:1.3;color:#888">${optLocal ? `${escapeHtml(optLead || optText)}: just reply “unsubscribe”.` : `${optLead ? `${escapeHtml(optLead)} ` : ""}<a href="${escapeHtml(input.optOut.url)}">${escapeHtml(optText)}</a>`}</div>`;
   }
 
   if (!input.plainText && input.clickRewrite && !isLocalUrl(input.clickRewrite("https://example.com"))) {

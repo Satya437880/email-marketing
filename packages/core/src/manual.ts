@@ -69,7 +69,7 @@ export async function sendManualEmails(input: ManualSendInput, opts: { trackingB
         attachments: input.attachments,
         signatureHtml: renderSignature(mailbox, `${seed}:sig`),
         plainText: false,
-        optOut: optOut.enabled ? { url: `${base}/u/${token}`, text: optOut.text } : null,
+        optOut: optOut.enabled ? { url: `${base}/u/${token}`, text: optOut.text, lead: optOut.lead } : null,
       });
       const sent = await sendSmtp(creds.server, creds.auth, email);
       if (sent.rejected.length && !sent.accepted.length) throw new Error(`Rejected: ${sent.response}`);

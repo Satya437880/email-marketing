@@ -253,7 +253,7 @@ export interface SequenceSettings {
   oooBufferDays: number;
   plainText: boolean;
   espMatching: boolean;
-  optOut: { enabled: boolean; text: string };
+  optOut: { enabled: boolean; text: string; lead?: string };
   trackOpens: boolean;
   trackClicks: boolean;
   cc: string[];
@@ -277,7 +277,7 @@ export const DEFAULT_SEQUENCE_SETTINGS: SequenceSettings = {
   oooBufferDays: 2,
   plainText: false,
   espMatching: true,
-  optOut: { enabled: true, text: "Opt-out" },
+  optOut: { enabled: true, text: "Opt-out", lead: "If you'd rather not hear from me, let me know" },
   trackOpens: false,
   trackClicks: false,
   cc: [],

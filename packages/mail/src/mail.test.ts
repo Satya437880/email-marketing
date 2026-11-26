@@ -178,7 +178,7 @@ describe("espFromMx", () => {
       bodyHtml: "Hey sarah,<br><br>how are you<br><br><br>", signatureHtml: "Mara Johnson<br>Maplempss",
       optOut: { url: "https://t.acme.io/u/abc", text: "If you'd rather not hear from me, let me know" },
     });
-    expect(e.text).toBe("Hey sarah,\n\nhow are you\n\nMara Johnson\nMaplempss\nIf you'd rather not hear from me, let me know (https://t.acme.io/u/abc)");
+    expect(e.text).toBe("Hey sarah,\n\nhow are you\n\nMara Johnson\nMaplempss\nIf you'd rather not hear from me, let me know Opt-out (https://t.acme.io/u/abc)");
   });
 });
 
@@ -237,9 +237,9 @@ describe("buildQuoteHistory (Outlook-style, newest first)", () => {
 
 describe("opt-out link", () => {
   const base = { from: { name: "A", address: "a@example.com" }, to: "b@example.org", subject: "Hi", bodyHtml: "<p>Hello</p>", plainText: false };
-  it("makes the custom text itself the one-click link", () => {
+  it("writes the sentence, then the custom text as the one-click link", () => {
     const e = composeEmail({ ...base, optOut: { url: "https://track.example.com/u/abc", text: "Opt-out" } });
-    expect(e.html).toContain('<a href="https://track.example.com/u/abc">Opt-out</a>');
+    expect(e.html).toContain('If you&#39;d rather not hear from me, let me know <a href="https://track.example.com/u/abc">Opt-out</a>');
     expect(e.headers["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
   });
   it("falls back to Opt-out when the text is left empty", () => {
@@ -249,6 +249,13 @@ describe("opt-out link", () => {
 });
 
 describe("thread history spacing", () => {
+  it("draws the line above From as a border Outlook shows, and does not quote it twice", () => {
+    const m = { direction: "out" as const, fromName: "A", fromAddress: "a@x.com", toAddress: "b@x.com", subject: "hi", sentAt: new Date(), bodyText: "", bodyHtml: "<p>one</p>" };
+    const first = buildQuoteHistory([m])!;
+    expect(first.html).toContain("border-top:solid #e1e1e1 1.0pt");
+    const again = buildQuoteHistory([{ ...m, bodyHtml: `<p>two</p>${first.html}` }])!;
+    expect(again.html.match(/<b>From:<\/b>/g)).toHaveLength(1);
+  });
   it("drops empty blocks at the end of a quoted message and zeroes paragraph margins", () => {
     const m = { direction: "out" as const, fromName: "A", fromAddress: "a@x.com", toAddress: "b@x.com", subject: "hi", sentAt: new Date(), bodyText: "",
       bodyHtml: `<html><body><div style="line-height:1.5"><p>Business Development</p><p>&nbsp;</p><div><br></div><div style="margin:0;padding:0"><br></div></div></body></html>` };
