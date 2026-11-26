@@ -24,3 +24,43 @@ export const EXTRA_ZONES: string[] = [
   "Etc/GMT+1", "Etc/GMT+2", "Etc/GMT+3", "Etc/GMT+4", "Etc/GMT+5", "Etc/GMT+6", "Etc/GMT+7", "Etc/GMT+8", "Etc/GMT+9", "Etc/GMT+10", "Etc/GMT+11", "Etc/GMT+12",
   "Etc/GMT-1", "Etc/GMT-2", "Etc/GMT-3", "Etc/GMT-4", "Etc/GMT-5", "Etc/GMT-6", "Etc/GMT-7", "Etc/GMT-8", "Etc/GMT-9", "Etc/GMT-10", "Etc/GMT-11", "Etc/GMT-12", "Etc/GMT-13", "Etc/GMT-14",
 ];
+
+// Abbreviations shown on the right of a zone in the picker, with the country, and searchable (EST, PST, "Canada", "United States" ...).
+// United States and Canada zones are tagged automatically in TimezoneSelect from ianaZones.ts; the ones listed here are everywhere else.
+// Each zone is a real city zone, so daylight saving is handled automatically (America/New_York is EST in winter and EDT in summer).
+export interface ZoneTag { tz: string; abbr: string; region: string; words?: string }
+export const ZONE_TAGS: ZoneTag[] = [
+  // India and others
+  { tz: "Asia/Kolkata", abbr: "IST", region: "India", words: "Indian" },
+  { tz: "Asia/Calcutta", abbr: "IST", region: "India", words: "Indian" },
+  { tz: "Europe/London", abbr: "GMT", region: "United Kingdom", words: "BST British UK" },
+  { tz: "Europe/Paris", abbr: "CET", region: "France", words: "CEST Central European" },
+  { tz: "Europe/Berlin", abbr: "CET", region: "Germany", words: "CEST Central European" },
+  { tz: "Europe/Athens", abbr: "EET", region: "Greece", words: "EEST Eastern European" },
+  { tz: "Europe/Moscow", abbr: "MSK", region: "Russia" },
+  { tz: "Asia/Dubai", abbr: "GST", region: "United Arab Emirates", words: "Gulf UAE" },
+  { tz: "Asia/Karachi", abbr: "PKT", region: "Pakistan" },
+  { tz: "Asia/Singapore", abbr: "SGT", region: "Singapore" },
+  { tz: "Asia/Hong_Kong", abbr: "HKT", region: "Hong Kong" },
+  { tz: "Asia/Tokyo", abbr: "JST", region: "Japan" },
+  { tz: "Asia/Seoul", abbr: "KST", region: "South Korea" },
+  { tz: "Australia/Perth", abbr: "AWST", region: "Australia" },
+  { tz: "Australia/Adelaide", abbr: "ACST", region: "Australia", words: "ACDT" },
+  { tz: "Australia/Sydney", abbr: "AEST", region: "Australia", words: "AEDT" },
+  { tz: "Pacific/Auckland", abbr: "NZST", region: "New Zealand", words: "NZDT" },
+  { tz: "Africa/Johannesburg", abbr: "SAST", region: "South Africa" },
+  { tz: "Africa/Lagos", abbr: "WAT", region: "Nigeria" },
+  { tz: "Africa/Nairobi", abbr: "EAT", region: "Kenya" },
+];
+
+// US and Canadian zones take their abbreviation from the standard (winter) offset: -5 is EST, -8 is PST and so on.
+export const NA_ABBR: Record<string, { abbr: string; words: string }> = {
+  "GMT-3:30": { abbr: "NST", words: "NDT Newfoundland" },
+  "GMT-4": { abbr: "AST", words: "ADT Atlantic" },
+  "GMT-5": { abbr: "EST", words: "EDT ET Eastern" },
+  "GMT-6": { abbr: "CST", words: "CDT CT Central" },
+  "GMT-7": { abbr: "MST", words: "MDT MT Mountain" },
+  "GMT-8": { abbr: "PST", words: "PDT PT Pacific" },
+  "GMT-9": { abbr: "AKST", words: "AKDT Alaska" },
+  "GMT-10": { abbr: "HST", words: "Hawaii Aleutian" },
+};
