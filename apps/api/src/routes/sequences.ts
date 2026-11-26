@@ -26,7 +26,7 @@ const settingsSchema = z.object({
   oooBufferDays: z.number().int().min(0).max(30),
   plainText: z.boolean(),
   espMatching: z.boolean(),
-  optOut: z.object({ enabled: z.boolean(), text: z.string().trim().max(200), replyOnly: z.boolean().optional() }),
+  optOut: z.object({ enabled: z.boolean(), text: z.string().trim().max(200) }),
   trackOpens: z.boolean(),
   trackClicks: z.boolean(),
   cc: z.array(z.string().email()).max(5),
@@ -108,7 +108,7 @@ function sampleSendTimes(count: number, timeZone: string): Date[] {
 }
 
 // Rebuilds the thread above a follow-up from the drafts of the earlier steps, the way it would look once they had been sent.
-function earlierThread(o: { earlier: { subject: string; bodyHtml: string }[]; vars: Variables; seed: string; from: { name: string; address: string }; to: string; signatureHtml?: string; optOut: { url: string; text: string; replyOnly?: boolean } | null; timeZone?: string; contactName: string }) {
+function earlierThread(o: { earlier: { subject: string; bodyHtml: string }[]; vars: Variables; seed: string; from: { name: string; address: string }; to: string; signatureHtml?: string; optOut: { url: string; text: string } | null; timeZone?: string; contactName: string }) {
   const names: Record<string, string> = { [o.from.address.toLowerCase()]: o.from.name, ...(o.contactName ? { [o.to.toLowerCase()]: o.contactName } : {}) };
   const sentBefore: HistoryMessage[] = [];
   let opener = "";
@@ -524,7 +524,7 @@ export async function sequenceRoutes(app: FastifyInstance) {
     const bodyHtml = render(b.bodyHtml, vars, { seed, html: true });
     // Preview what is actually sent: body + mailbox signature + opt-out line.
     const settings = DEFAULT_SEQUENCE_SETTINGS;
-    const optOut = settings.optOut.enabled ? { url: "#", text: settings.optOut.text, replyOnly: settings.optOut.replyOnly } : null;
+    const optOut = settings.optOut.enabled ? { url: "#", text: settings.optOut.text } : null;
     const signatureHtml = mailbox ? renderSignature(mailbox, `${seed}:sig`) : undefined;
     // Follow-up replying in the thread: the earlier steps are rebuilt (oldest first) as they would already have been sent, then quoted newest first.
     // "threaded" comes from the step type (reply in the same thread, with or without a new subject); older callers fall back to the empty-subject rule.
@@ -562,7 +562,7 @@ export async function sequenceRoutes(app: FastifyInstance) {
     // A follow-up (empty subject) with earlier steps is sent as a reply carrying the whole thread.
     const signatureHtml = renderSignature(mailbox, seed);
     const settings = DEFAULT_SEQUENCE_SETTINGS;
-    const optOut = settings.optOut.enabled ? { url: "#", text: settings.optOut.text, replyOnly: settings.optOut.replyOnly } : null;
+    const optOut = settings.optOut.enabled ? { url: "#", text: settings.optOut.text } : null;
     const asReply = !b.subject.trim() && !!b.earlier?.length;
     const ownSubject = render(b.subject, vars, { seed: `${seed}:s` }).trim() || "(follow-up)";
     const thread = asReply ? earlierThread({ earlier: b.earlier!, vars, seed, from: { name: mailbox.fromName, address: mailbox.email }, to: b.to, signatureHtml, optOut, timeZone: mailbox.timezone, contactName: contact ? `${contact.firstName} ${contact.lastName}`.trim() : "" }) : undefined;

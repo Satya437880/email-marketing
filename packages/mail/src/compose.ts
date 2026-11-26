@@ -23,8 +23,8 @@ export interface ComposeInput {
   bodyHtml: string;
   signatureHtml?: string;
   plainText: boolean;
-  // replyOnly: no link and no List-Unsubscribe headers, so the email looks like one written by hand; people unsubscribe by replying.
-  optOut?: { url: string; mailto?: string; text: string; replyOnly?: boolean } | null;
+  // text is shown at the bottom of the email as the unsubscribe link itself.
+  optOut?: { url: string; mailto?: string; text: string } | null;
   openPixelUrl?: string | null;
   clickRewrite?: ((url: string) => string) | null;
   thread?: { inReplyTo: string; references: string[] };
@@ -75,11 +75,12 @@ export function composeEmail(input: ComposeInput): OutgoingEmail {
   if (input.signatureHtml?.replace(leading, "").trim()) html += `${gap}${input.signatureHtml.replace(leading, "")}`;
 
   // With no public web address configured the opt-out cannot be a link; recipients are asked to reply instead (replies saying so are detected).
-  const optLocal = !!input.optOut && (!!input.optOut.replyOnly || isLocalUrl(input.optOut.url));
+  const optLocal = !!input.optOut && isLocalUrl(input.optOut.url);
+  const optText = input.optOut?.text.trim() || "Opt-out";
   if (input.optOut) {
     // Directly under the signature, no blank line (still one blank line after the body if there is no signature).
     const hasSig = html.endsWith(input.signatureHtml?.replace(leading, "") ?? "\0") && !!input.signatureHtml?.replace(leading, "").trim();
-    html += `${hasSig ? "" : gap}<div style="margin:0;padding:0;font-size:10px;line-height:1.3;color:#888">${optLocal ? `${escapeHtml(input.optOut.text)}: just reply “unsubscribe”.` : `${escapeHtml(input.optOut.text)} <a href="${escapeHtml(input.optOut.url)}">here</a>.`}</div>`;
+    html += `${hasSig ? "" : gap}<div style="margin:0;padding:0;font-size:10px;line-height:1.3;color:#888">${optLocal ? `${escapeHtml(optText)}: just reply “unsubscribe”.` : `<a href="${escapeHtml(input.optOut.url)}">${escapeHtml(optText)}</a>`}</div>`;
   }
 
   if (!input.plainText && input.clickRewrite && !isLocalUrl(input.clickRewrite("https://example.com"))) {
@@ -112,7 +113,7 @@ ${input.quote.text}`;
   }
 
   const headers: Record<string, string> = {};
-  if (input.optOut && !input.optOut.replyOnly) {
+  if (input.optOut) {
     if (optLocal) {
       headers["List-Unsubscribe"] = `<mailto:${input.optOut.mailto ?? input.from.address}?subject=unsubscribe>`;
     } else {

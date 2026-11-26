@@ -1,7 +1,7 @@
 import { TimezoneSelect } from "../TimezoneSelect";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  ArrowLeft, Building2, CalendarClock, ChevronRight, Clock, DollarSign, Eye, FileText, Filter as Funnel, Forward, HelpCircle, Link2, LogOut, Mail, MailOpen, MessageSquareReply,
+  ArrowLeft, Building2, CalendarClock, ChevronRight, Clock, DollarSign, Eye, FileText, Filter as Funnel, Forward, HelpCircle, Link2, Mail, MailOpen, MessageSquareReply,
   MousePointerClick, Pencil, Plus, Rocket, Save, Search, Send, Server, ShieldCheck, SlidersHorizontal, Trash2, Type, UserCheck, UserPlus, Users, X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -58,7 +58,7 @@ function SequenceEditor() {
   const saveSteps = useMutation({
     mutationFn: () => api(`/v1/workspaces/${ws}/sequences/${id}/steps`, {
       method: "PUT",
-      body: { steps: steps.map((s) => ({ id: s.id, type: s.type, name: s.name, delayDays: s.delayDays, delayMinutes: s.delayMinutes, variants: s.variants.map((v) => ({ id: v.id, label: v.label, subject: v.subject, bodyHtml: v.bodyHtml, weight: v.weight, attachments: v.attachments ?? [] })) })) },
+      body: { steps: steps.map((s) => ({ id: s.id, type: s.type, name: s.name, delayDays: s.delayDays, delayMinutes: s.delayMinutes, threadMode: s.threadMode ?? null, variants: s.variants.map((v) => ({ id: v.id, label: v.label, subject: v.subject, bodyHtml: v.bodyHtml, weight: v.weight, attachments: v.attachments ?? [] })) })) },
     }),
     onSuccess: () => { setDirty(false); toast("Sequence saved"); refresh(); },
     onError: (e: Error) => toast(e.message, "error"),
@@ -82,7 +82,6 @@ function SequenceEditor() {
     setResetKey((k) => k + 1);
   };
   const discardButton = <button className="btn-secondary h-10" onClick={discardChanges} disabled={saveSteps.isPending}>Discard changes</button>;
-  const updateButton = <button className="btn-primary h-10" onClick={() => void updateSequence()} disabled={saveSteps.isPending}>Update sequence</button>;
   // Leaving the Schedule or Settings screen saves any unsaved changes first.
   const go = async (n: number) => {
     if ((step === 3 || step === 4) && settingsSave.current && !(await settingsSave.current())) return;
@@ -112,14 +111,13 @@ function SequenceEditor() {
           <StepHeader title="Contacts" help="Who receives this sequence." text={`${s.contactCount.toLocaleString()} contact${s.contactCount === 1 ? "" : "s"} in this sequence`} />
           <div className="mt-6"><ContactsTab sequenceId={s.id} onChange={refresh} /></div>
         </>}
-        {step === 2 && <StepHeader title="Sequence steps" help="Add emails and the waits between them. Add variants to A/B test." text="Draft your sequence by adding steps and customizing them"
-          actions={dirty ? <>{discardButton}{updateButton}</> : undefined} />}
+        {step === 2 && <StepHeader title="Sequence steps" help="Add emails and the waits between them. Add variants to A/B test." text="Draft your sequence by adding steps and customizing them" />}
         {step === 2 && <div className="mt-6"><StepBuilder key={resetKey} steps={steps} onChange={(next) => { setSteps(next); setDirty(true); }} /></div>}
 
         {(step === 3 || step === 4) && <>
           {step === 3
-            ? <StepHeader title="Schedule" help="The days and hours emails may be sent, in the time zone below." text="Activate the days on which emails should be sent out." actions={settingsDirty ? updateButton : undefined} />
-            : <StepHeader title="Settings" help="Rotation, priorities and deliverability rules." text="Choose the mailboxes that send this sequence and how it behaves." actions={settingsDirty ? updateButton : undefined} />}
+            ? <StepHeader title="Schedule" help="The days and hours emails may be sent, in the time zone below." text="Activate the days on which emails should be sent out." />
+            : <StepHeader title="Settings" help="Rotation, priorities and deliverability rules." text="Choose the mailboxes that send this sequence and how it behaves." />}
           {step === 4 && <section className="pt-6"><h3 className="text-sm font-semibold mb-3">Rotation</h3><SendersTab sequence={s} onChange={refresh} /></section>}
           <SettingsTab key={resetKey} sequence={s} onChange={refresh} section={step === 3 ? "schedule" : "settings"} registerSave={(fn) => { settingsSave.current = fn; }} onDirty={setSettingsDirty} />
         </>}
@@ -697,11 +695,14 @@ function CreateSenderModal({ mailboxes, onClose, onCreated }: { mailboxes: Mailb
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 // One labelled band of the settings page: section name on the left, controls on the right.
-function SettingsRow({ title, children, show = true }: { title: string; children: React.ReactNode; show?: boolean }) {
+function SettingsRow({ title, hint, children, show = true }: { title: string; hint?: string; children: React.ReactNode; show?: boolean }) {
   if (!show) return null;
   return (
     <div className="grid md:grid-cols-[240px_1fr] gap-3 md:gap-8 py-6 border-b border-ink-200 last:border-0">
-      <div className="text-sm font-semibold pt-1">{title}</div>
+      <div className="pt-1">
+        <div className="text-sm font-semibold">{title}</div>
+        {hint && <p className="text-sm text-ink-500 mt-1">{hint}</p>}
+      </div>
       <div className="space-y-3 max-w-2xl">{children}</div>
     </div>
   );
@@ -896,16 +897,16 @@ function SettingsTab({ sequence, onChange, section = "all", registerSave, onDirt
           <OptionCard icon={<Type size={16} />} title="Plain Text" text="Send emails as text-only, with no HTML, for the best deliverability." checked={st.plainText} onChange={(v) => set("plainText", v)}
             badge={<span className="chip bg-brand-50 text-brand-700 border border-brand-200 shrink-0">Boost deliverability</span>} />
           <OptionCard icon={<Server size={16} />} title="Email service provider (ESP) matching" text="Match the sender's and recipient's ESP (Gmail and Outlook only)." checked={st.espMatching} onChange={(v) => set("espMatching", v)} />
+        </SettingsRow>
 
-          <div className="text-sm font-medium text-ink-600 pt-3">Opt-out of emails</div>
-          <OptionCard icon={<LogOut size={16} />} title="Custom opt-out at the bottom" text="Add a hyperlink or text for recipients to unsubscribe at the bottom of the email." checked={st.optOut.enabled} onChange={(v) => set("optOut", { ...st.optOut, enabled: v })}>
-            <input className="input h-9" value={st.optOut.text} onChange={(e) => set("optOut", { ...st.optOut, text: e.target.value })} placeholder="If you'd rather not hear from me, let me know" />
-            <label className="flex items-start gap-2 mt-2 text-sm">
-              <input type="checkbox" className="mt-1" checked={!!st.optOut.replyOnly} onChange={(e) => set("optOut", { ...st.optOut, replyOnly: e.target.checked })} />
-              <span>Make it look personal: a plain line asking people to reply "unsubscribe". No link, and no Unsubscribe button in Gmail. A reply saying so adds them to the do-not-contact list.</span>
+        <SettingsRow title="Include opt-out (Recommended)" hint="If recipients can easily unsubscribe, they are less likely to mark your email as spam" show={show("settings")}>
+          <Toggle label="Opt-out link at the bottom of email" checked={st.optOut.enabled} onChange={(v) => set("optOut", { ...st.optOut, enabled: v })} />
+          {st.optOut.enabled && (
+            <label className="block">
+              <span className="block text-sm font-medium mb-1">Customize opt-out link</span>
+              <input className="input h-10" value={st.optOut.text} maxLength={200} onChange={(e) => set("optOut", { ...st.optOut, text: e.target.value })} placeholder="Opt-out" />
             </label>
-            {!st.optOut.replyOnly && <p className="text-xs text-ink-500 mt-1">The text links to a one-click unsubscribe page.</p>}
-          </OptionCard>
+          )}
           {!st.optOut.enabled && <p className="text-xs text-amber-700">Without an opt-out link, recipients can only unsubscribe by replying. CAN-SPAM, CASL and Gmail/Yahoo bulk-sender rules expect an easy opt-out in cold email.</p>}
         </SettingsRow>
 
@@ -916,14 +917,6 @@ function SettingsTab({ sequence, onChange, section = "all", registerSave, onDirt
           {st.plainText && (st.trackOpens || st.trackClicks) && <p className="text-xs text-amber-700">Plain text emails can't carry tracking, so opens and clicks won't be tracked while Plain Text is on.</p>}
         </SettingsRow>
       </div>
-
-      {dirty && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-30 card flex items-center gap-3 px-4 py-2.5 shadow-lg">
-          <span className="text-sm">You have unsaved changes</span>
-          <button className="btn-secondary" onClick={() => { setSt(initial); setPriority(sequence.priority); setCcOn(initial.cc.length > 0 || initial.bcc.length > 0); setCcText({ cc: initial.cc.join(", "), bcc: initial.bcc.join(", ") }); }} disabled={save.isPending}>Discard</button>
-          <button className="btn-primary" onClick={() => save.mutate()} disabled={save.isPending || scheduleInvalid(st.schedule)}>{save.isPending ? "Saving…" : "Update sequence"}</button>
-        </div>
-      )}
     </div>
   );
 }

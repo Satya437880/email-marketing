@@ -178,7 +178,7 @@ describe("espFromMx", () => {
       bodyHtml: "Hey sarah,<br><br>how are you<br><br><br>", signatureHtml: "Mara Johnson<br>Maplempss",
       optOut: { url: "https://t.acme.io/u/abc", text: "If you'd rather not hear from me, let me know" },
     });
-    expect(e.text).toBe("Hey sarah,\n\nhow are you\n\nMara Johnson\nMaplempss\nIf you'd rather not hear from me, let me know here (https://t.acme.io/u/abc).");
+    expect(e.text).toBe("Hey sarah,\n\nhow are you\n\nMara Johnson\nMaplempss\nIf you'd rather not hear from me, let me know (https://t.acme.io/u/abc)");
   });
 });
 
@@ -235,19 +235,16 @@ describe("buildQuoteHistory (Outlook-style, newest first)", () => {
   });
 });
 
-describe("reply-only opt-out (looks like a personal email)", () => {
+describe("opt-out link", () => {
   const base = { from: { name: "A", address: "a@example.com" }, to: "b@example.org", subject: "Hi", bodyHtml: "<p>Hello</p>", plainText: false };
-  it("adds a plain line with no link and none of the headers that make mail apps show an Unsubscribe button", () => {
-    const e = composeEmail({ ...base, optOut: { url: "https://track.example.com/u/abc", text: "If you'd rather not hear from me, let me know", replyOnly: true } });
-    expect(e.html).toContain("just reply “unsubscribe”");
-    expect(e.html).not.toContain("track.example.com");
-    expect(e.headers["List-Unsubscribe"]).toBeUndefined();
-    expect(e.headers["List-Unsubscribe-Post"]).toBeUndefined();
-  });
-  it("still uses the one-click link and headers when reply-only is off", () => {
-    const e = composeEmail({ ...base, optOut: { url: "https://track.example.com/u/abc", text: "Let me know" } });
-    expect(e.html).toContain("https://track.example.com/u/abc");
+  it("makes the custom text itself the one-click link", () => {
+    const e = composeEmail({ ...base, optOut: { url: "https://track.example.com/u/abc", text: "Opt-out" } });
+    expect(e.html).toContain('<a href="https://track.example.com/u/abc">Opt-out</a>');
     expect(e.headers["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
+  });
+  it("falls back to Opt-out when the text is left empty", () => {
+    const e = composeEmail({ ...base, optOut: { url: "https://track.example.com/u/abc", text: "  " } });
+    expect(e.html).toContain(">Opt-out</a>");
   });
 });
 

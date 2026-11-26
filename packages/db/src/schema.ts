@@ -253,8 +253,7 @@ export interface SequenceSettings {
   oooBufferDays: number;
   plainText: boolean;
   espMatching: boolean;
-  // replyOnly: a plain "just reply unsubscribe" line, no link and no Unsubscribe button in the recipient's mail app.
-  optOut: { enabled: boolean; text: string; replyOnly?: boolean };
+  optOut: { enabled: boolean; text: string };
   trackOpens: boolean;
   trackClicks: boolean;
   cc: string[];
@@ -278,7 +277,7 @@ export const DEFAULT_SEQUENCE_SETTINGS: SequenceSettings = {
   oooBufferDays: 2,
   plainText: false,
   espMatching: true,
-  optOut: { enabled: true, text: "If you'd rather not hear from me, let me know", replyOnly: true },
+  optOut: { enabled: true, text: "Opt-out" },
   trackOpens: false,
   trackClicks: false,
   cc: [],

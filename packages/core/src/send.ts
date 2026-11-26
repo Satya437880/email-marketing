@@ -152,7 +152,7 @@ export async function executeSend(job: SendJob, opts: { trackingBaseUrl: string;
     attachments: variant.attachments,
     signatureHtml: renderSignature(mailbox, `${seed}:sig`),
     plainText: settings.plainText,
-    optOut: settings.optOut.enabled ? { url: `${base}/u/${token}`, text: settings.optOut.text, replyOnly: settings.optOut.replyOnly } : null,
+    optOut: settings.optOut.enabled ? { url: `${base}/u/${token}`, text: settings.optOut.text } : null,
     openPixelUrl: settings.trackOpens ? `${base}/t/o/${token}` : null,
     clickRewrite: settings.trackClicks ? (u) => `${base}/t/c/${token}?u=${encodeURIComponent(u)}` : null,
     thread: threadHeaders,

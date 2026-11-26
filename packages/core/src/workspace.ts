@@ -51,25 +51,39 @@ export async function addDnc(workspaceId: string, type: "email" | "domain", valu
   await db.insert(dncEntries).values({ workspaceId, type, value: value.trim().toLowerCase(), source }).onConflictDoNothing();
 }
 
-// Removes entries from the do-not-contact list. An email that was on it is no longer "unsubscribed", and its contacts that were stopped
-// as opted out in a running sequence continue from the step they were waiting for, inside that sequence's sending window.
+// Removes entries (emails or whole domains) from the do-not-contact list. Contacts no longer covered by any entry stop being
+// "unsubscribed", and wherever they were stopped as opted out they are put back, including in sequences that have since completed.
 export async function removeDncEntries(workspaceId: string, ids: string[], now = new Date()): Promise<{ removed: number; restored: number }> {
   const entries = await db.select().from(dncEntries).where(and(eq(dncEntries.workspaceId, workspaceId), inArray(dncEntries.id, ids)));
   if (!entries.length) return { removed: 0, restored: 0 };
   await db.delete(dncEntries).where(and(eq(dncEntries.workspaceId, workspaceId), inArray(dncEntries.id, entries.map((e) => e.id))));
   const emails = entries.filter((e) => e.type === "email").map((e) => e.value.toLowerCase());
-  if (!emails.length) return { removed: entries.length, restored: 0 };
+  const domains = entries.filter((e) => e.type === "domain").map((e) => e.value.toLowerCase());
 
-  const freed = await db.update(contacts).set({ unsubscribedAt: null })
-    .where(and(eq(contacts.workspaceId, workspaceId), inArray(sql`lower(${contacts.email})`, emails)))
-    .returning({ id: contacts.id });
+  const covered = await db.select({ id: contacts.id, email: contacts.email }).from(contacts).where(and(
+    eq(contacts.workspaceId, workspaceId),
+    or(
+      emails.length ? inArray(sql`lower(${contacts.email})`, emails) : undefined,
+      domains.length ? inArray(sql`split_part(lower(${contacts.email}), '@', 2)`, domains) : undefined,
+    ),
+  ));
+  // Someone still listed another way (their own address, or their domain) stays blocked.
+  const stillBlocked = await dncMatches(workspaceId, covered.map((c) => c.email));
+  const freed = covered.filter((c) => !stillBlocked.has(c.email.toLowerCase())).map((c) => c.id);
   if (!freed.length) return { removed: entries.length, restored: 0 };
+  await db.update(contacts).set({ unsubscribedAt: null }).where(inArray(contacts.id, freed));
 
-  const stopped = await db.select({ id: sequenceContacts.id, settings: sequences.settings }).from(sequenceContacts)
+  const stopped = await db.select({ id: sequenceContacts.id, currentStep: sequenceContacts.currentStep, nextStep: sequenceContacts.nextStep, settings: sequences.settings })
+    .from(sequenceContacts)
     .innerJoin(sequences, eq(sequences.id, sequenceContacts.sequenceId))
-    .where(and(inArray(sequenceContacts.contactId, freed.map((c) => c.id)), eq(sequenceContacts.state, "opted_out"), eq(sequences.status, "active"), sql`${sequenceContacts.nextStep} is not null`));
+    .where(and(inArray(sequenceContacts.contactId, freed), eq(sequenceContacts.state, "opted_out")));
   for (const r of stopped) {
-    await db.update(sequenceContacts).set({ state: "active", nextRunAt: alignToWindow(now, r.settings.schedule), dueAt: now, lastError: null }).where(eq(sequenceContacts.id, r.id));
+    // Waiting for a step: carry on from it. Never emailed: queue for the first email. Otherwise: finished, so only unsent emails follow.
+    const change = r.nextStep !== null
+      ? { state: "active" as const, nextRunAt: alignToWindow(now, r.settings.schedule), dueAt: now }
+      : { state: r.currentStep < 0 ? ("queued" as const) : ("finished" as const), nextRunAt: null, dueAt: null };
+    // The running-sequence check (syncLiveSequences) schedules these and makes a completed sequence active again.
+    await db.update(sequenceContacts).set({ ...change, lastError: null }).where(eq(sequenceContacts.id, r.id));
   }
   return { removed: entries.length, restored: stopped.length };
 }
