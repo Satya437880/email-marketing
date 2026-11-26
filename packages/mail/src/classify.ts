@@ -22,7 +22,8 @@ const BOUNCE_SUBJECTS = /(undeliverable|delivery status notification|delivery ha
 const HARD_BOUNCE = /(5\.1\.[0-9]|550|551|553|user unknown|no such user|does not exist|address rejected|recipient not found|mailbox unavailable|invalid recipient)/i;
 const OOO_SUBJECTS = /(out of (the )?office|ooo\b|automatic reply|auto(matic)?[- ]?reply|autoreply|on vacation|on leave|away from (the )?office|abwesenheit|absence)/i;
 const OOO_BODY = /(out of (the )?office|on (annual |parental |maternity |paternity )?leave|on vacation|on holiday|away until|back (in the office )?on|return(ing)? on|limited access to (my )?email)/i;
-const UNSUB_BODY = /^\s*(unsubscribe|remove me|stop|opt[- ]?out|take me off)/i;
+const UNSUB_BODY = /^\s*(unsubscribe|remove me|stop(?=\s*([.!,]|$))|opt[- ]?out|take me off)/i;
+const GREETING = /^\s*(hi|hello|hey|dear)\b[^\n,.!:]{0,40}[,.!:]?[ \t]*\n+/i;
 const UNSUB_ANY = /(please (remove|unsubscribe) me|remove me from (your|this) (list|mailing)|stop (emailing|contacting|sending)|do not (contact|email) me|don'?t (contact|email) me|not interested,? (please )?remove)/i;
 
 function header(h: Record<string, string>, name: string): string {
@@ -45,8 +46,9 @@ export function classifyInbound(msg: InboundSignals): Classification {
   }
   if (isAuto) return { kind: "auto_reply" };
 
-  const firstLines = msg.text.split(/\n\s*\n|\n>|\nOn .+wrote:/)[0] ?? msg.text;
-  if (UNSUB_BODY.test(firstLines) || UNSUB_ANY.test(firstLines)) return { kind: "unsubscribe" };
+  // Only the person's own words: the quoted email below them carries our opt-out line.
+  const own = replyOwnText(msg.text.replace(/\r\n/g, "\n"));
+  if (UNSUB_BODY.test(own.replace(GREETING, "")) || UNSUB_ANY.test(own)) return { kind: "unsubscribe" };
 
   return { kind: "reply" };
 }

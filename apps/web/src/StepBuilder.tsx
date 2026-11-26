@@ -109,15 +109,19 @@ function StartDelay({ minutes, onSave, followUp = false }: { minutes: number; on
 export function StepBuilder({ steps, onChange }: { steps: Step[]; onChange: (steps: Step[]) => void }) {
   const toast = useToast();
   const blocks = toBlocks(steps);
+  // The newest draft, including edits made since the last render: a template sets the subject and then the body, and the
+  // second edit must not be built on the old copy.
+  const latest = useRef(blocks);
+  latest.current = blocks;
   // Every step is always open; each keeps its own selected test tab.
   const [tabs, setTabs] = useState<Record<number, number>>({});
   const tabOf = (i: number) => Math.min(tabs[i] ?? 0, Math.max(0, (blocks[i]?.variants.length ?? 1) - 1));
   const setTab = (i: number, v: number) => setTabs((t) => ({ ...t, [i]: v }));
 
-  const commit = (next: Block[]) => onChange(toSteps(next));
-  const updateBlock = (i: number, patch: Partial<Block>) => commit(blocks.map((b, j) => (j === i ? { ...b, ...patch } : b)));
+  const commit = (next: Block[]) => { latest.current = next; onChange(toSteps(next)); };
+  const updateBlock = (i: number, patch: Partial<Block>) => commit(latest.current.map((b, j) => (j === i ? { ...b, ...patch } : b)));
   const updateVariant = (i: number, patch: Partial<Variant>) => {
-    const b = blocks[i];
+    const b = latest.current[i];
     if (b) updateBlock(i, { variants: b.variants.map((v, j) => (j === tabOf(i) ? { ...v, ...patch } : v)) });
   };
 
@@ -214,7 +218,7 @@ export function StepBuilder({ steps, onChange }: { steps: Step[]; onChange: (ste
                       embedded
                       canReply={i > 0}
                       threadMode={b.threadMode ?? null}
-                      onThreadMode={(threadMode) => updateBlock(i, { threadMode })}
+                      onThreadMode={(threadMode) => updateBlock(i, { threadMode, ...(threadMode === "reply" ? { variants: b.variants.map((x, j) => (j === vi ? { ...x, subject: "" } : x)) } : {}) })}
                       replySubject={threadSubject(i)}
                       earlier={blocks.slice(0, i).map((x) => ({ subject: x.variants[0]?.subject ?? "", bodyHtml: x.variants[0]?.bodyHtml ?? "" }))}
                       stats={{ sent: b.sent ?? 0, waiting: b.waiting ?? 0 }}

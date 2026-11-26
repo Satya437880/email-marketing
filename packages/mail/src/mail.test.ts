@@ -265,3 +265,16 @@ describe("thread history spacing", () => {
     expect(q.html).not.toMatch(/<br><\/div><\/div>\s*$/);
   });
 });
+
+describe("removal requests in replies", () => {
+  const kind = (text: string) => classifyInbound({ from: "matt@x.com", subject: "Re: hello", text, headers: {} }).kind;
+  it("is found after a greeting", () => {
+    expect(kind("Hi Sam,\n\nPlease remove me from your list.")).toBe("unsubscribe");
+    expect(kind("Hello,\nUnsubscribe")).toBe("unsubscribe");
+    expect(kind("Stop.")).toBe("unsubscribe");
+  });
+  it("is not read into ordinary replies or the quoted email", () => {
+    expect(kind("Stop by on Tuesday, happy to talk.")).toBe("reply");
+    expect(kind("Sounds good.\n\nFrom: Sam <s@y.com>\nPlease remove me")).toBe("reply");
+  });
+});

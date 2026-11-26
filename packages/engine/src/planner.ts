@@ -188,3 +188,21 @@ export function evaluate(input: EvaluateInput): Decision {
   // Out of daily capacity: try again in an hour; counters reset at the mailbox's local midnight.
   return { action: "reschedule", at: new Date(now.getTime() + HOUR), reason: pick.reason };
 }
+
+// Contacts remember their place in a sequence as a position. When steps are added or removed, this moves a contact's place so it
+// still points at the same emails: currentStep is the last one dealt with (-1 = none), nextStep the one waiting (null = nothing).
+export function remapPosition(oldIds: readonly string[], steps: readonly { id: string; type: string }[], at: { currentStep: number; nextStep: number | null }): { currentStep: number; nextStep: number | null } {
+  const now = new Map(steps.map((s, i) => [s.id, i]));
+  let currentStep = at.currentStep < 0 ? -1 : 0;
+  for (let j = Math.min(at.currentStep, oldIds.length - 1); j >= 0; j--) {
+    const i = now.get(oldIds[j]!);
+    if (i !== undefined) { currentStep = i; break; }
+  }
+  // A deleted waiting email is replaced by the next one that still exists.
+  let nextStep: number | null = null;
+  for (let j = at.nextStep ?? oldIds.length; j < oldIds.length; j++) {
+    const i = now.get(oldIds[j]!);
+    if (i !== undefined && steps[i]!.type === "email") { nextStep = i; break; }
+  }
+  return { currentStep, nextStep };
+}

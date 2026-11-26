@@ -72,7 +72,9 @@ export async function executeSend(job: SendJob, opts: { trackingBaseUrl: string;
   }
 
   const steps = await db.select().from(sequenceSteps).where(eq(sequenceSteps.sequenceId, sequence.id)).orderBy(asc(sequenceSteps.position));
-  const step = steps[job.stepIndex];
+  // Read from the contact: the steps may have been edited since this send was queued.
+  const stepIndex = sc.nextStep ?? job.stepIndex;
+  const step = steps[stepIndex];
   const contact = await db.query.contacts.findFirst({ where: eq(contacts.id, sc.contactId) });
   if (!step || step.type !== "email" || !contact) {
     await releaseReservation(mailbox, now);
@@ -182,7 +184,7 @@ export async function executeSend(job: SendJob, opts: { trackingBaseUrl: string;
     throw err;
   }
 
-  const next = nextEmailStep(steps.map((s) => ({ id: s.id, type: s.type, delayDays: s.delayDays, delayMinutes: s.delayMinutes })), job.stepIndex, now);
+  const next = nextEmailStep(steps.map((s) => ({ id: s.id, type: s.type, delayDays: s.delayDays, delayMinutes: s.delayMinutes })), stepIndex, now);
   await db.transaction(async (tx) => {
     if (!continueThread || !thread) {
       [thread] = await tx.insert(threads).values({
@@ -214,12 +216,12 @@ export async function executeSend(job: SendJob, opts: { trackingBaseUrl: string;
     }).returning({ id: messages.id });
     await tx.insert(events).values({
       workspaceId: sequence.workspaceId, type: "sent", contactId: contact.id, sequenceId: sequence.id, stepId: step.id,
-      variantId: variant.id, mailboxId: mailbox.id, messageId: msg!.id, meta: { stepIndex: job.stepIndex },
+      variantId: variant.id, mailboxId: mailbox.id, messageId: msg!.id, meta: { stepIndex },
     });
     await tx.update(contacts).set({ lastContactedAt: now }).where(eq(contacts.id, contact.id));
     await tx.update(sequenceContacts).set({
       state: next ? "active" : "finished",
-      currentStep: job.stepIndex,
+      currentStep: stepIndex,
       nextStep: next?.index ?? null,
       nextRunAt: next ? alignToWindow(next.dueAt, sequence.settings.schedule) : null,
       dueAt: next?.dueAt ?? null,
@@ -228,7 +230,7 @@ export async function executeSend(job: SendJob, opts: { trackingBaseUrl: string;
     }).where(and(eq(sequenceContacts.id, sc.id), eq(sequenceContacts.state, "sending")));
   });
   emitEvent(sequence.workspaceId, "email.sent", {
-    contactEmail: contact.email, contactId: contact.id, sequenceId: sequence.id, sequenceName: sequence.name, step: job.stepIndex, subject: email.subject, mailbox: mailbox.email,
+    contactEmail: contact.email, contactId: contact.id, sequenceId: sequence.id, sequenceName: sequence.name, step: stepIndex, subject: email.subject, mailbox: mailbox.email,
   });
   await maybeCompleteSequence(sequence.id);
   return "sent";

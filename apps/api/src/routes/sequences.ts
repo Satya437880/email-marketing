@@ -1,3 +1,4 @@
+import { remapPosition } from "@outreach/engine";
 import { addContactsToSequence, contactVariables, continueFinishedContacts, syncLiveSequences, launchSequence, LaunchError, connectionFor, renderSignature, rescheduleWaitingEmails, retimeWaitingEmails } from "@outreach/core";
 import {
   contacts, db, DEFAULT_SEQUENCE_SETTINGS, labels, mailboxes, messages, products, senderProfileMailboxes, senderProfiles, sequenceContacts, sequences, sequenceSenders, sequenceSteps, stepVariants,
@@ -292,10 +293,11 @@ export async function sequenceRoutes(app: FastifyInstance) {
     const p = params(req, idParams);
     const b = body(req, stepsSchema);
     const seq = await owned(wsId(req), p.id);
-    const existing = await db.select({ id: sequenceSteps.id }).from(sequenceSteps).where(eq(sequenceSteps.sequenceId, seq.id));
+    const existing = await db.select({ id: sequenceSteps.id }).from(sequenceSteps).where(eq(sequenceSteps.sequenceId, seq.id)).orderBy(asc(sequenceSteps.position));
     const existingIds = new Set(existing.map((e) => e.id));
     await db.transaction(async (tx) => {
       const keep = new Set<string>();
+      const saved: { id: string; type: string }[] = [];
       for (const [position, s] of b.steps.entries()) {
         let stepId = s.id && existingIds.has(s.id) ? s.id : undefined;
         if (stepId) {
@@ -304,6 +306,7 @@ export async function sequenceRoutes(app: FastifyInstance) {
           stepId = (await tx.insert(sequenceSteps).values({ sequenceId: seq.id, position, type: s.type, name: s.name, delayDays: s.delayDays, delayMinutes: s.delayMinutes, threadMode: s.type === "email" ? s.threadMode ?? null : null }).returning())[0]!.id;
         }
         keep.add(stepId);
+        saved.push({ id: stepId, type: s.type });
         const current = await tx.select({ id: stepVariants.id }).from(stepVariants).where(eq(stepVariants.stepId, stepId));
         const currentIds = new Set(current.map((c) => c.id));
         const keepVariants = new Set<string>();
@@ -321,11 +324,26 @@ export async function sequenceRoutes(app: FastifyInstance) {
       }
       const drop = [...existingIds].filter((id) => !keep.has(id));
       if (drop.length) await tx.delete(sequenceSteps).where(inArray(sequenceSteps.id, drop));
-      // Contacts waiting on a step that no longer exists move to the end of the sequence.
-      await tx.execute(sql`
-        update sequence_contacts set next_step = null, state = 'finished', next_run_at = null
-        where sequence_id = ${seq.id} and state in ('active', 'ooo') and next_step >= ${b.steps.length}
-      `);
+      // Steps may have moved: every contact's place follows the same emails. Rows are read first, then updated by id, so a
+      // position that was just written is never moved a second time.
+      const oldIds = existing.map((e) => e.id);
+      const places = await tx.select({ id: sequenceContacts.id, currentStep: sequenceContacts.currentStep, nextStep: sequenceContacts.nextStep, state: sequenceContacts.state })
+        .from(sequenceContacts).where(eq(sequenceContacts.sequenceId, seq.id)).for("update");
+      const moves = new Map<string, { change: Partial<typeof sequenceContacts.$inferInsert>; ids: string[] }>();
+      for (const c of places) {
+        const to = remapPosition(oldIds, saved, c);
+        // Waiting contacts with no email left to wait for are finished.
+        const done = c.nextStep !== null && to.nextStep === null && ["active", "ooo", "sending"].includes(c.state);
+        if (to.currentStep === c.currentStep && to.nextStep === c.nextStep && !done) continue;
+        const change = { ...to, ...(done ? { state: "finished" as const, nextRunAt: null } : {}) };
+        const key = JSON.stringify(change);
+        const move = moves.get(key) ?? { change, ids: [] as string[] };
+        move.ids.push(c.id);
+        moves.set(key, move);
+      }
+      for (const { change, ids } of moves.values()) {
+        for (let i = 0; i < ids.length; i += 1000) await tx.update(sequenceContacts).set(change).where(inArray(sequenceContacts.id, ids.slice(i, i + 1000)));
+      }
     });
     // Waits changed on a running sequence: contacts already waiting are timed again.
     await retimeWaitingEmails(seq.id);

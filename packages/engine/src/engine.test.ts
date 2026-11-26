@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluate, nextEmailStep, nextUnsentEmailStep, orderDue, randomGapMs, pickMailbox, pickVariant, type EvaluateInput, type MailboxCandidate } from "./planner";
+import { evaluate, nextEmailStep, nextUnsentEmailStep, remapPosition, orderDue, randomGapMs, pickMailbox, pickVariant, type EvaluateInput, type MailboxCandidate } from "./planner";
 import { alignToWindow, isInWindow, localDayKey, localParts, nextWindowStart, recalculateDue, type SendSchedule } from "./schedule";
 
 const toronto: SendSchedule = { timezone: "America/Toronto", days: [1, 2, 3, 4, 5], start: "08:00", end: "18:00" };
@@ -269,5 +269,20 @@ describe("randomGapMs", () => {
   it("leaves a normal range alone", () => {
     expect(randomGapMs(180, 480, () => 0)).toBe(180_000);
     expect(randomGapMs(180, 480, () => 1)).toBe(480_000);
+  });
+});
+
+describe("remapPosition (steps edited on a launched sequence)", () => {
+  const email = (id: string) => ({ id, type: "email" });
+  const wait = (id: string) => ({ id, type: "delay" });
+  it("follows the same emails when a wait is added before the first one", () => {
+    expect(remapPosition(["a", "d", "b"], [wait("new"), email("a"), wait("d"), email("b")], { currentStep: 0, nextStep: 2 })).toEqual({ currentStep: 1, nextStep: 3 });
+  });
+  it("moves on to the following email when the waiting one is deleted", () => {
+    expect(remapPosition(["a", "d", "b", "e", "c"], [email("a"), wait("d"), wait("e"), email("c")], { currentStep: 0, nextStep: 2 })).toEqual({ currentStep: 0, nextStep: 3 });
+  });
+  it("has nothing waiting when no later email is left, and leaves new contacts unsent", () => {
+    expect(remapPosition(["a", "d", "b"], [email("a")], { currentStep: 0, nextStep: 2 })).toEqual({ currentStep: 0, nextStep: null });
+    expect(remapPosition(["a"], [email("a")], { currentStep: -1, nextStep: 0 })).toEqual({ currentStep: -1, nextStep: 0 });
   });
 });

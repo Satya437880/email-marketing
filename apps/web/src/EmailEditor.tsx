@@ -408,7 +408,8 @@ export function EmailEditor({ stepName, onStepName, subject, onSubject, bodyHtml
   // Pick "New thread" to give it its own subject instead.
   const [threadMode, setThreadMode] = useState<ThreadMode>(canReply ? (savedMode ?? (!subject.trim() ? "reply" : "new")) : "new");
   useEffect(() => {
-    setThreadMode(canReply && !subject.trim() ? "reply" : "new");
+    // The saved choice wins. The subject only decides for a step where no Type was ever chosen.
+    setThreadMode(canReply ? (savedMode ?? (!subject.trim() ? "reply" : "new")) : "new");
     // Only when a different step or test is opened, not on every keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editorKey, canReply]);
@@ -485,8 +486,8 @@ export function EmailEditor({ stepName, onStepName, subject, onSubject, bodyHtml
                 const next = e.target.value as ThreadMode;
                 setThreadMode(next);
                 onThreadMode?.(next);
-                if (next === "reply") onSubject("");
-                else requestAnimationFrame(() => subjectRef.current?.focus());
+                // For "reply" the parent clears the subject in the same change as the Type, so neither overwrites the other.
+                if (next !== "reply") requestAnimationFrame(() => subjectRef.current?.focus());
               }}>
               <option value="new">New thread</option>
               {canReply && <option value="reply">Reply in same thread</option>}
