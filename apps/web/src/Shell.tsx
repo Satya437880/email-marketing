@@ -7,13 +7,10 @@ import { useTheme, type ThemePref } from "./theme";
 import { Avatar, cx, Modal, useToast } from "./ui";
 
 export function Logo({ collapsed }: { collapsed?: boolean }) {
-  return (
-    <div className="flex items-center gap-2">
-      {/* multiply blends the image's white background into whatever surface it sits on */}
-      <img src="/logo.png" alt="Maple MPSS" width={32} height={32} className="w-8 h-8 shrink-0 mix-blend-multiply dark:mix-blend-normal dark:rounded-md" />
-      {!collapsed && <span className="font-semibold tracking-tight" style={{ color: "rgb(var(--logo-text))" }}>Maple MPSS</span>}
-    </div>
-  );
+  // The artwork is transparent maroon; on the dark theme it is drawn in white so it stays readable.
+  return collapsed
+    ? <img src="/logo-mark.png" alt="Outreach" width={32} height={32} className="w-8 h-8 shrink-0 dark:brightness-0 dark:invert" />
+    : <img src="/logo.png" alt="Outreach" width={88} height={32} className="h-8 w-auto shrink-0 mx-auto dark:brightness-0 dark:invert" />;
 }
 
 const THEMES: { k: ThemePref; label: string; icon: ReactNode }[] = [
