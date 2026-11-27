@@ -1,6 +1,8 @@
 // Email apps turn street addresses and phone numbers into blue links on their own. An invisible character (zero-width
-// non-joiner) inside them stops that detection, so the recipient sees normal text. Links, email and web addresses are left alone.
+// non-joiner) inside them, and putting them in a link tag that goes nowhere (apps do not add a link inside one), so the recipient
+// sees normal text. Links, email and web addresses are left alone.
 const BREAK = "‌";
+const plain = (text: string) => `<a style="color:inherit;text-decoration:none;cursor:text">${text}</a>`;
 
 const SEP = "(?:&nbsp;|[\\s().\\u2013-])";
 const PHONE = new RegExp(`\\+?\\(?\\d(?:${SEP}*\\d){6,}`, "g");
@@ -25,8 +27,10 @@ export function unlinkContactDetails(html: string): string {
         return part;
       }
       if (inLink) return part;
-      if (STREET.test(part) || POSTAL.test(part)) part = breakAddress(part);
-      return part.replace(PHONE, (n) => n.replace(/\d(?=\d)/g, `$&${BREAK}`));
+      const breakPhone = (n: string) => n.replace(/\d(?=\d)/g, `$&${BREAK}`);
+      // An address line is wrapped whole; otherwise only the phone number is.
+      if (STREET.test(part) || POSTAL.test(part)) return plain(breakAddress(part).replace(PHONE, breakPhone));
+      return part.replace(PHONE, (n) => plain(breakPhone(n)));
     })
     .join("");
 }
