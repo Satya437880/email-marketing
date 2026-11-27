@@ -239,7 +239,7 @@ describe("opt-out link", () => {
   const base = { from: { name: "A", address: "a@example.com" }, to: "b@example.org", subject: "Hi", bodyHtml: "<p>Hello</p>", plainText: false };
   it("writes the sentence, then the custom text as the one-click link", () => {
     const e = composeEmail({ ...base, optOut: { url: "https://track.example.com/u/abc", text: "Opt-out" } });
-    expect(e.html).toContain('If you&#39;d rather not hear from me, let me know <a href="https://track.example.com/u/abc">Opt-out</a>');
+    expect(e.html).toContain('If you&#39;d rather not hear from me, let me know <a href="https://track.example.com/u/abc" style="text-decoration:none">Opt-out</a>');
     expect(e.headers["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
   });
   it("falls back to Opt-out when the text is left empty", () => {

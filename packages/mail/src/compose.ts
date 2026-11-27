@@ -83,7 +83,7 @@ export function composeEmail(input: ComposeInput): OutgoingEmail {
   if (input.optOut) {
     // Directly under the signature, no blank line (still one blank line after the body if there is no signature).
     const hasSig = html.endsWith(input.signatureHtml?.replace(leading, "") ?? "\0") && !!input.signatureHtml?.replace(leading, "").trim();
-    html += `${hasSig ? "" : gap}<div style="margin:0;padding:0;font-size:10px;line-height:1.3;color:#888">${optLocal ? `${escapeHtml(optLead || optText)}: just reply “unsubscribe”.` : `${optLead ? `${escapeHtml(optLead)} ` : ""}<a href="${escapeHtml(input.optOut.url)}">${escapeHtml(optText)}</a>`}</div>`;
+    html += `${hasSig ? "" : gap}<div style="margin:0;padding:0;font-size:10px;line-height:1.3;color:#888">${optLocal ? `${escapeHtml(optLead || optText)}: just reply “unsubscribe”.` : `${optLead ? `${escapeHtml(optLead)} ` : ""}<a href="${escapeHtml(input.optOut.url)}" style="text-decoration:none">${escapeHtml(optText)}</a>`}</div>`;
   }
 
   if (!input.plainText && input.clickRewrite && !isLocalUrl(input.clickRewrite("https://example.com"))) {
