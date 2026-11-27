@@ -63,18 +63,33 @@ function SequenceEditor() {
     onSuccess: () => { setDirty(false); toast("Sequence saved"); refresh(); },
     onError: (e: Error) => toast(e.message, "error"),
   });
+  // The same server action launches a draft and relaunches a launched sequence; it never repeats an email a contact already received.
   const action = useMutation({
-    mutationFn: (a: "launch") => api(`/v1/workspaces/${ws}/sequences/${id}/${a}`, { body: {} }),
-    onSuccess: (_, a) => { toast("Sequence launched — sending starts in the next send window"); refresh(); },
+    mutationFn: (_kind: "launch" | "relaunch") => api(`/v1/workspaces/${ws}/sequences/${id}/launch`, { body: {} }),
+    onSuccess: (_, kind) => {
+      toast(`Sequence ${kind === "launch" ? "launched" : "relaunched"} — sending starts in the next send window`);
+      refresh();
+      void qc.invalidateQueries({ queryKey: ["emails", ws] });
+      void qc.invalidateQueries({ queryKey: ["seq-contacts", ws] });
+    },
     onError: (e: Error) => toast(e.message, "error"),
   });
 
   if (seq.isLoading || !seq.data) return <Spinner />;
   const s = seq.data;
-  // One button saves whatever changed: the steps, and/or the Schedule and Settings.
+  const launched = s.status !== "draft";
+  const unsaved = dirty || settingsDirty;
+  // One button saves whatever changed: the steps, and/or the Schedule and Settings. False means something could not be saved.
   const updateSequence = async () => {
-    if (dirty) saveSteps.mutate();
-    if (settingsDirty && settingsSave.current) await settingsSave.current();
+    if (dirty) {
+      try { await saveSteps.mutateAsync(); } catch { return false; }
+    }
+    if (settingsDirty && settingsSave.current) return settingsSave.current();
+    return true;
+  };
+  const relaunch = async () => {
+    if (!confirm(`Relaunch "${s.name}"? ${unsaved ? "Your changes are saved first. " : ""}New contacts and new emails go out in the next send window. Nobody gets the same email twice.`)) return;
+    if (await updateSequence()) action.mutate("relaunch");
   };
   const discardChanges = () => {
     if (!confirm("Discard your unsaved changes? The sequence goes back to how it was last saved.")) return;
@@ -97,12 +112,12 @@ function SequenceEditor() {
           <span className="hidden sm:inline text-sm text-ink-500 truncate max-w-[260px]">{s.name}</span>
           <StatusPill status={s.status} />
           <div className="flex flex-wrap gap-2">
-            {(dirty || settingsDirty) && discardButton}
-            {(dirty || settingsDirty) && <button className="btn-primary h-10" onClick={() => void updateSequence()} disabled={saveSteps.isPending}>Update sequence</button>}
-            {s.status === "draft" && <button className="btn-primary" disabled={dirty || action.isPending} title={dirty ? "Save first" : undefined} onClick={() => { if (confirm(`Launch "${s.name}"? Emails start going out in its next sending window to the ${s.contactCount.toLocaleString()} contact${s.contactCount === 1 ? "" : "s"} in it.`)) action.mutate("launch"); }}><Rocket size={15} /> Launch</button>}
+            {unsaved && discardButton}
+            {(launched || unsaved) && <button className={cx("h-10", unsaved ? "btn-primary" : "btn-secondary")} onClick={() => void updateSequence()} disabled={!unsaved || saveSteps.isPending} title={unsaved ? "Save your changes" : "No unsaved changes"}><Save size={15} /> Update sequence</button>}
+            {launched && <button className="btn-primary h-10" disabled={saveSteps.isPending || action.isPending} title="Save and start sending what is new" onClick={() => void relaunch()}><Rocket size={15} /> {action.isPending ? "Relaunching…" : "Relaunch"}</button>}
+            {!launched && <button className="btn-primary" disabled={dirty || action.isPending} title={dirty ? "Save first" : undefined} onClick={() => { if (confirm(`Launch "${s.name}"? Emails start going out in its next sending window to the ${s.contactCount.toLocaleString()} contact${s.contactCount === 1 ? "" : "s"} in it.`)) action.mutate("launch"); }}><Rocket size={15} /> Launch</button>}
           </div>
-        </div>
-        <Stepper step={step} onStep={(n) => void go(n)} />
+        </div>        <Stepper step={step} onStep={(n) => void go(n)} />
       </div>
 
       <div className={cx("flex-1 p-4 md:p-8 w-full", step === 2 ? "max-w-[1800px]" : "max-w-6xl")}>
