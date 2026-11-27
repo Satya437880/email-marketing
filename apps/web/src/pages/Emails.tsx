@@ -118,9 +118,8 @@ export function EmailsPage() {
   const sendable = chosen.filter((m) => m.kind === "scheduled" && m.canSendNow);
 
   return (
-    <div>
-
-      <div className="px-4 md:px-8 pt-6">
+    <div className="h-full flex flex-col">
+      <div className="shrink-0 px-4 md:px-8 pt-6">
   <div className="flex flex-wrap items-center gap-2.5 mb-4 rounded-xl border border-ink-200 bg-surface p-2 shadow-sm">
     <div className="relative flex-1 min-w-[200px] max-w-md">
       <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-400" />
@@ -133,9 +132,9 @@ export function EmailsPage() {
   </div>
       </div>
 
-      <div className="flex">
+      <div className="flex flex-1 min-h-0">
       {showFilters && <EmailFilterSidebar ws={ws} scheduledCount={list.data?.scheduled} value={filters} status={tab} applied={applied} onClear={reset} onApply={(f, st) => { setFilters(f); setTab(st); setPage(1); setPicked(new Set()); setApplied(true); }} />}
-      <div className="flex-1 min-w-0 px-4 md:px-8 pt-0 pb-4">
+      <div className="flex-1 min-w-0 overflow-y-auto px-4 md:px-8 pt-0 pb-4">
         {active.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 mb-3">
             {active.map((a) => (
