@@ -3,7 +3,7 @@ import {
   contacts, db, events, mailboxes, messages, sequenceContacts, sequences, sequenceSteps, stepVariants, threads,
 } from "@outreach/db";
 import { alignToWindow, localDayKey, nextEmailStep, pickVariant } from "@outreach/engine";
-import { buildQuoteHistory, composeEmail, domainAcceptsMail, render, sendSmtp, type Variables } from "@outreach/mail";
+import { buildQuoteHistory, composeEmail, domainAcceptsMail, render, sendSmtp, unlinkContactDetails, type Variables } from "@outreach/mail";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { connectionFor } from "./mailbox";
 import type { SendJob } from "./planner";
@@ -44,9 +44,9 @@ export function renderSignature(mailbox: { signatureHtml: string; fromName: stri
   const [first = "", ...rest] = mailbox.fromName.trim().split(/\s+/);
   const last = rest.join(" ");
   const sig = mailbox.signatureHtml.replace(/^<!--sig:[^>]*-->/, "");
-  return render(sig, {
+  return unlinkContactDetails(render(sig, {
     first_name: first, last_name: last, full_name: mailbox.fromName, sender_first_name: first, sender_last_name: last, sender_name: mailbox.fromName, sender_email: mailbox.email,
-  }, { seed, html: true });
+  }, { seed, html: true }));
 }
 
 async function releaseReservation(mailbox: typeof mailboxes.$inferSelect, at: Date) {

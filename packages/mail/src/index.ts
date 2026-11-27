@@ -6,3 +6,4 @@ export * from "./classify";
 export * from "./transport";
 export * from "./esp";
 export * from "./system";
+export * from "./plain-details";
